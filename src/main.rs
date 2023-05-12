@@ -29,6 +29,28 @@ struct OggPage {
     segments: Vec<OggSegment>,
 }
 
+impl OggPage {
+    fn serialize(&self) -> Vec<u8> {
+        let mut data: Vec<u8> = vec![];
+        data.extend(self.signature.as_bytes().iter());
+        data.push(self.version);
+        data.push(self.flags);
+        data.extend(self.granule_position.to_le_bytes());
+        data.extend(self.serial_number.to_le_bytes());
+        data.extend(self.sequence_number.to_le_bytes());
+        data.extend(self.checksum.to_le_bytes());
+        data.push(self.total_segments);
+
+        let segment_sizes: Vec<u8> = self.segments.iter().map(|s| s.size).collect();
+        data.extend(segment_sizes);
+
+        let segment_data: Vec<u8> = self.segments.iter().flat_map(|s| s.data.clone()).collect();
+        data.extend(segment_data);
+
+        data
+    }
+}
+
 #[derive(Debug)]
 struct OggParser<'a> {
     data: &'a [u8],
@@ -71,8 +93,12 @@ impl Iterator for OggParser<'_> {
 
         let segments: Vec<OggSegment> = segment_sizes
             .iter()
-            .scan((seg_start, 0), |(seg_start, size), &x| {
-                Some((*seg_start + *size, x))
+            .scan(seg_start, |state, &x| {
+                let seg_start = *state;
+
+                *state += x as usize;
+
+                Some((seg_start, x))
             })
             .map(|(seg_start, size)| {
                 data[seg_start..seg_start + size as usize].try_into().unwrap()
@@ -101,5 +127,8 @@ fn main() {
 
     let pages: Vec<OggPage> = OggParser::new(&data).into_iter().collect();
 
-    println!("{:?}", pages[20]);
+    let serialized: Vec<u8> = pages.iter().flat_map(|x| x.serialize()).collect();
+
+    fs::write("/home/winter/Downloads/mysunset-output.opus", serialized)
+        .expect("Failed to write output file!");
 }
