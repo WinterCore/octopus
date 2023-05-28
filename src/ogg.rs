@@ -1,7 +1,6 @@
-
 use std::str;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OggSegment {
     size: u8,
     data: Vec<u8>,
@@ -16,17 +15,17 @@ impl From<&[u8]> for OggSegment {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OggPage {
-    signature: String,
-    version: u8,
-    flags: u8,
-    granule_position: u64,
-    serial_number: u32,
-    sequence_number: u32,
-    checksum: u32,
-    total_segments: u8,
-    segments: Vec<OggSegment>,
+    pub signature: String,
+    pub version: u8,
+    pub flags: u8,
+    pub granule_position: u64,
+    pub serial_number: u32,
+    pub sequence_number: u32,
+    pub checksum: u32,
+    pub total_segments: u8,
+    pub segments: Vec<OggSegment>,
 }
 
 impl OggPage {
