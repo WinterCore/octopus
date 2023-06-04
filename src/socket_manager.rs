@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::str;
 
-use tokio::{net::TcpStream, io::AsyncWriteExt, sync::{oneshot, mpsc}};
+use tokio::{net::TcpStream, io::{AsyncWriteExt, self}, sync::{oneshot, mpsc}};
 
 #[derive(Debug)]
-struct SocketManager {
+pub struct SocketManager {
     receiver: mpsc::Receiver<SocketManagerMessage>,
     sockets: HashMap<usize, TcpStream>,
     id_counter: usize,
@@ -24,21 +25,58 @@ impl SocketManager {
         Self { receiver, id_counter: 0, sockets: HashMap::new() }
     }
 
-    async fn send_all(&mut self, buf: &[u8]) {
-        for socket in self.sockets.values_mut() {
-            match socket.write_all(buf).await {
-                Ok(_) => {},
-                Err(_) => {
-                    // Handle socket closed!
+    async fn send_all(&mut self, buf: &[u8]) -> Result<(), String> {
+        let mut sockets_to_clean: Vec<usize> = vec![];
+
+        for (id, socket) in self.sockets.iter_mut() {
+            match Self::send_to_socket(socket, buf).await {
+                Err(e) => {
+                    // Failed to write to socket
+                    sockets_to_clean.push(*id);
+                    eprintln!("[ERROR]: Something happened while writing to socket! {:?}", e);
                 },
-            }
+                _ => {},
+            };
         }
+
+        sockets_to_clean
+            .into_iter()
+            .for_each(|id| {
+                self.sockets.remove(&id);
+            });
+
+        Ok(())
     }
 
-    async fn send(&mut self, id: usize, buf: &[u8]) {
+    pub async fn send_to_socket(socket: &mut TcpStream, buf: &[u8]) -> Result<(), String> {
+        let result = async {
+            socket.write(format!("{:X}", buf.len()).as_bytes()).await?;
+            socket.write("\r\n".as_bytes()).await?;
+            socket.write_all(buf).await?;
+            socket.write("\r\n".as_bytes()).await?;
+            socket.flush().await?;
+
+            Ok::<(), io::Error>(())
+        };
+
+        return result
+            .await
+            .map_err(|x| x.to_string())
+    }
+
+    async fn send(&mut self, id: usize, buf: &[u8]) -> Result<(), String> {
         if let Some(socket) = self.sockets.get_mut(&id) {
-            let _ = socket.write_all(buf).await;
+            match Self::send_to_socket(socket, buf).await {
+                Err(e) => {
+                    // Failed to write to socket
+                    self.sockets.remove(&id);
+                    eprintln!("[ERROR]: Something happened while writing to socket! {:?}", e);
+                },
+                _ => {},
+            };
         }
+
+        Ok(())
     }
 
     fn register_socket(&mut self, socket: TcpStream) -> usize {
@@ -49,25 +87,29 @@ impl SocketManager {
         id
     }
 
-    async fn handle_message(&mut self, msg: SocketManagerMessage) {
+    async fn handle_message(&mut self, msg: SocketManagerMessage) -> Result<(), String> {
         match msg {
             SocketManagerMessage::SendAll(data) => {
-                self.send_all(&data).await;
+                self.send_all(&data).await?;
             },
             SocketManagerMessage::Send(id, data) => {
-                self.send(id, &data).await;
+                self.send(id, &data).await?;
             },
             SocketManagerMessage::RegisterSocket { socket, sender_cb } => {
                 let id = self.register_socket(socket);
                 sender_cb.send(id).expect("Should send response");
             },
-        }
+        };
+
+        Ok(())
     }
 }
 
 async fn run_socket_manager(mut sm: SocketManager) {
     while let Some(msg) = sm.receiver.recv().await {
-        sm.handle_message(msg).await;
+        if let Err(e) = sm.handle_message(msg).await {
+            eprintln!("[ERROR(socket_manager)]: Failed to process message {}", e);
+        }
     }
 }
 

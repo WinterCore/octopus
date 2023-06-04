@@ -2,8 +2,8 @@ use std::str;
 
 #[derive(Debug, Clone)]
 pub struct OggSegment {
-    size: u8,
-    data: Vec<u8>,
+    pub size: u8,
+    pub data: Vec<u8>,
 }
 
 impl From<&[u8]> for OggSegment {

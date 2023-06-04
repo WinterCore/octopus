@@ -2,35 +2,94 @@ mod ogg;
 mod socket_manager;
 mod ogg_player;
 
-use std::io;
-use tokio::net::TcpListener;
-use socket_manager::SocketManagerHandle;
+use std::{io, sync::Arc, time::Duration};
+use tokio::{net::TcpListener, sync::mpsc, io::{AsyncReadExt, AsyncWriteExt}, time::sleep};
+use socket_manager::{SocketManagerHandle, SocketManager};
+use ogg_player::OggPlayer;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
-    let socket_manager = SocketManagerHandle::new();
+    let listener = TcpListener::bind("0.0.0.0:8080").await?;
+    let _socket_manager = Arc::new(SocketManagerHandle::new());
+
+    let (tx, mut rx) = mpsc::channel(5);
+
     println!("Up running on port 8080");
+    let _ogg_player = Arc::new(OggPlayer::new(tx));
 
-    loop {
-        let (socket, addr) = match listener.accept().await {
-            Ok(data) => data,
-            Err(e) => {
-                eprintln!("[ERROR]: Failed to accept socket! {:?}", e.to_string());
-                continue;
-            },
-        };
+    let player_ogg_player = _ogg_player.clone();
+    let server_ogg_player = _ogg_player.clone();
 
-        println!("[INFO]: Socket connected {}", addr);
+    let controlled_player_handle = tokio::spawn(async move {
+        player_ogg_player.load_file("/home/winter/Downloads/someday-that-summer.opus")
+            .await
+            .expect("Should load file");
 
-        match socket_manager.register_socket(socket).await {
-            Err(_) => {
-                eprintln!("[ERROR(SOCKET_MANAGER)]: Failed to register socket");
-            },
-            _ => {},
-        };
+        player_ogg_player.play().await.expect("Should play file");
+    });
 
-    }
+    let player_socket_manager = _socket_manager.clone();
+    let player_handle = tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            println!("Received player data");
+            match player_socket_manager.send_all(data).await {
+                Err(_) => eprintln!("[ERROR]: Failed to send ogg page to all sockets!"),
+                _ => {},
+            };
+        }
+    });
+
+    let server_socket_manager = _socket_manager.clone();
+    let server_handle = tokio::spawn(async move {
+        loop {
+            let (mut socket, addr) = match listener.accept().await {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("[ERROR]: Failed to accept socket! {:?}", e.to_string());
+                    continue;
+                },
+            };
+            let mut buf = vec![];
+            socket.read(&mut buf)
+                .await
+                .expect("Should read socket data");
+
+            println!("[INFO]: Socket connected {}", addr);
+            let http_head = "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Type: audio/ogg\r\nTransfer-Encoding: chunked\r\n\r\n";
+            socket.write_all(http_head.as_bytes())
+                .await
+                .expect("Should send http head");
+            socket.flush()
+                .await
+                .expect("Should flush socket");
+
+            let head = server_ogg_player.get_head().await;
+
+            if let Some(data) = head {
+                match SocketManager::send_to_socket(&mut socket, &data).await {
+                    Err(_) => eprintln!("[ERROR]: Failed to send header pages to client {}", addr),
+                    _ => {},
+                }
+            }
+
+            match server_socket_manager.register_socket(socket).await {
+                Ok(id) => id,
+                Err(_) => {
+                    eprintln!("[ERROR(SOCKET_MANAGER)]: Failed to register socket");
+                    continue;
+                },
+            };
+
+        }
+    });
+
+    let _ = tokio::join!(
+        controlled_player_handle,
+        player_handle,
+        server_handle,
+    );
+
+    Ok(())
 }
 
 /*
