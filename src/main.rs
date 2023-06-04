@@ -1,33 +1,39 @@
 mod ogg;
+mod socket_manager;
+mod ogg_player;
 
-use std::time::Duration;
-use std::{io, fs};
-use ogg::{OggPage, OggParser};
-use tokio::time::sleep;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{BufReader, BufWriter, AsyncReadExt, AsyncWriteExt};
+use std::io;
+use tokio::net::TcpListener;
+use socket_manager::SocketManagerHandle;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    let socket_manager = SocketManagerHandle::new();
     println!("Up running on port 8080");
 
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        let (socket, addr) = match listener.accept().await {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("[ERROR]: Failed to accept socket! {:?}", e.to_string());
+                continue;
+            },
+        };
 
-        tokio::spawn(async move {
-            match process_socket(&mut socket).await {
-                Err(err) => {
-                    eprintln!("[ERROR]: Something happened while sending response {:?}", err);
-                },
-                Ok(()) => {
-                    println!("[INFO]: Response was sent successfully!");
-                },
-            };
-        });
+        println!("[INFO]: Socket connected {}", addr);
+
+        match socket_manager.register_socket(socket).await {
+            Err(_) => {
+                eprintln!("[ERROR(SOCKET_MANAGER)]: Failed to register socket");
+            },
+            _ => {},
+        };
+
     }
 }
 
+/*
 async fn process_socket(stream: &mut TcpStream) -> io::Result<()> {
     let ip = stream.peer_addr().expect("Stream has peer_addr");
     println!("[INFO]: Client connected {}", ip);
@@ -45,7 +51,7 @@ async fn process_socket(stream: &mut TcpStream) -> io::Result<()> {
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
     let mut buffer: Vec<u8> = vec![0; 500];
-    reader.read(&mut buffer).await?;
+    // reader.read(&mut buffer).await?;
 
     /*
     let data = str::from_utf8(&buffer).unwrap();
@@ -93,6 +99,4 @@ async fn process_socket(stream: &mut TcpStream) -> io::Result<()> {
 
     Ok(())
 }
-
-
-
+*/
