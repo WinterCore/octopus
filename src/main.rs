@@ -12,10 +12,8 @@ async fn main() -> io::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
     let _socket_manager = Arc::new(SocketManagerHandle::new());
 
-    let (tx, mut rx) = mpsc::channel(5);
-
     println!("Up running on port 8080");
-    let _ogg_player = Arc::new(OggPlayer::new(tx));
+    let _ogg_player = Arc::new(OggPlayer::new());
 
     let player_ogg_player = _ogg_player.clone();
     let server_ogg_player = _ogg_player.clone();

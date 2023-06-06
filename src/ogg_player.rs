@@ -1,33 +1,41 @@
-use std::{time::Duration, sync::atomic::{AtomicUsize, Ordering, AtomicU64}};
+use std::{time::Duration};
 
-use tokio::{fs, sync::{mpsc, RwLock}, time::sleep};
+use tokio::{fs, sync::mpsc, time::sleep};
 
 use crate::ogg::{OggPage, OggParser};
 
+enum OggPlayerMessage {
+    Play { path: String },
+    AddListener(mpsc::Sender<OggPlayerEvent>),
+}
+
+enum OggPlayerEvent {
+    AudioData {
+        data: Vec<u8>,
+        timestamp: u64,
+    },
+}
+
 
 pub struct OggPlayer {
-    ogg_data: RwLock<Option<Vec<OggPage>>>,
-    curr_page_idx: AtomicUsize,
-    prev_page_timestamp: AtomicU64,
-    sender: mpsc::Sender<Vec<u8>>,
+    ogg_data: Option<Vec<OggPage>>,
+    curr_page_idx: usize,
+    prev_page_timestamp: u64,
+    listeners: Vec<mpsc::Sender<OggPlayerEvent>>,
 }
 
 impl OggPlayer {
-    pub fn new(sender: mpsc::Sender<Vec<u8>>) -> Self {
+    pub fn new() -> Self {
         Self {
-            ogg_data: RwLock::new(None),
-            curr_page_idx: AtomicUsize::new(0),
-            prev_page_timestamp: AtomicU64::new(0),
-            sender,
+            ogg_data: None,
+            curr_page_idx: 0,
+            prev_page_timestamp: 0,
+            listeners: vec![],
         }
     }
 
     pub async fn get_head(&self) -> Option<Vec<u8>> {
-        let ogg_data = self.ogg_data
-            .read()
-            .await;
-
-        let bin: Vec<_> = ogg_data.as_ref()?
+        let bin: Vec<_> = self.ogg_data.as_ref()?
             .iter()
             .take_while(|p| {
                 let first_segment = match p.segments.get(0) {
@@ -52,26 +60,24 @@ impl OggPlayer {
         Some(bin)
     }
 
-    pub async fn load_file(&self, path: &str) -> Result<(), String> {
+    pub async fn load_file(&mut self, path: &str) -> Result<(), String> {
         let data = fs::read(path)
             .await
             .map_err(|x| x.to_string())?;
 
-        let mut ogg_data = self.ogg_data.write().await;
-        *ogg_data = Some(OggParser::new(&data).into_iter().collect());
-        self.curr_page_idx.store(0, Ordering::Relaxed);
+        self.ogg_data = Some(OggParser::new(&data).into_iter().collect());
+        self.curr_page_idx = 0;
+        self.play();
 
         Ok(())
     }
 
-    pub async fn play(&self) -> Result<(), String> {
+    pub async fn play(&mut self) -> Result<(), String> {
         let buffer_millis = 2000f64;
 
         loop {
-            let data_option = self.ogg_data.read().await;
-
-            let i = self.curr_page_idx.fetch_add(1, Ordering::Relaxed);
-            let data = match data_option.as_ref() {
+            let i = self.curr_page_idx;
+            let data = match self.ogg_data.as_ref() {
                 None => return Err("There's no loaded file to be played!".to_owned()),
                 Some(data) => data,
             };
@@ -82,13 +88,18 @@ impl OggPlayer {
             };
             drop(data);
 
-            self.sender
-                .send(page.serialize())
-                .await
-                .map_err(|x| x.to_string())?;
-
             let page_timestamp = page.granule_position as f64 / 48_000f64 * 1000f64;
-            let prev_page_timestamp = self.prev_page_timestamp.load(Ordering::Relaxed) as f64;
+            let prev_page_timestamp = self.prev_page_timestamp as f64;
+
+            for listener in self.listeners.iter() {
+                listener
+                    .send(OggPlayerEvent::AudioData {
+                        data: page.serialize(),
+                        timestamp: self.prev_page_timestamp,
+                    })
+                    .await
+                    .map_err(|x| x.to_string())?;
+            }
 
             let sleep_duration = page_timestamp - prev_page_timestamp;
 
@@ -97,9 +108,62 @@ impl OggPlayer {
                 sleep(Duration::from_millis((sleep_duration - buffer_millis) as u64)).await;
                 let prev_page_timestamp = (prev_page_timestamp + (sleep_duration - buffer_millis)) as u64;
                 println!("Storing {}", prev_page_timestamp);
-                self.prev_page_timestamp.store(prev_page_timestamp, Ordering::Relaxed);
+                self.prev_page_timestamp = prev_page_timestamp;
             }
         }
+
+        Ok(())
+    }
+
+    async fn handle_message(&mut self, msg: OggPlayerMessage) -> Result<(), String> {
+        match msg {
+            OggPlayerMessage::Play { path } => {
+                self.load_file(&path).await?;
+            },
+            OggPlayerMessage::AddListener(listener) => {
+                self.listeners.push(listener);
+            },
+        };
+
+        Ok(())
+    }
+}
+
+async fn run_ogg_player(mut op: OggPlayer, mut receiver: mpsc::Receiver<OggPlayerMessage>) {
+    while let Some(msg) = receiver.recv().await {
+        if let Err(e) = op.handle_message(msg).await {
+            eprintln!("[ERROR(socket_manager)]: Failed to process message {}", e);
+        }
+    }
+}
+
+struct OggPlayerHandle {
+    sender: mpsc::Sender<OggPlayerMessage>,
+}
+
+impl OggPlayerHandle {
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel(50);
+        let actor = OggPlayer::new();
+        tokio::spawn(run_ogg_player(actor, rx));
+
+        Self { sender: tx }
+    }
+
+    pub async fn load_file(&self, path: String) -> Result<(), String> {
+        self.sender
+            .send(OggPlayerMessage::Play { path })
+            .await
+            .map_err(|x| x.to_string())?;
+
+        Ok(())
+    }
+
+    pub async fn add_listener(&self, listener: mpsc::Sender<OggPlayerEvent>) -> Result<(), String> {
+        self.sender
+            .send(OggPlayerMessage::AddListener(listener))
+            .await
+            .map_err(|x| x.to_string())?;
 
         Ok(())
     }
