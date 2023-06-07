@@ -1,15 +1,16 @@
-use std::{time::Duration};
+use std::time::Duration;
 
-use tokio::{fs, sync::mpsc, time::sleep};
+use tokio::{fs, sync::{mpsc, oneshot}, time::sleep};
 
 use crate::ogg::{OggPage, OggParser};
 
 enum OggPlayerMessage {
     Play { path: String },
     AddListener(mpsc::Sender<OggPlayerEvent>),
+    GetHead(oneshot::Sender<Option<Vec<u8>>>),
 }
 
-enum OggPlayerEvent {
+pub enum OggPlayerEvent {
     AudioData {
         data: Vec<u8>,
         timestamp: u64,
@@ -17,7 +18,7 @@ enum OggPlayerEvent {
 }
 
 
-pub struct OggPlayer {
+struct OggPlayer {
     ogg_data: Option<Vec<OggPage>>,
     curr_page_idx: usize,
     prev_page_timestamp: u64,
@@ -34,7 +35,7 @@ impl OggPlayer {
         }
     }
 
-    pub async fn get_head(&self) -> Option<Vec<u8>> {
+    pub fn get_head(&self) -> Option<Vec<u8>> {
         let bin: Vec<_> = self.ogg_data.as_ref()?
             .iter()
             .take_while(|p| {
@@ -67,7 +68,7 @@ impl OggPlayer {
 
         self.ogg_data = Some(OggParser::new(&data).into_iter().collect());
         self.curr_page_idx = 0;
-        self.play();
+        self.play().await?;
 
         Ok(())
     }
@@ -77,6 +78,7 @@ impl OggPlayer {
 
         loop {
             let i = self.curr_page_idx;
+            self.curr_page_idx += 1;
             let data = match self.ogg_data.as_ref() {
                 None => return Err("There's no loaded file to be played!".to_owned()),
                 Some(data) => data,
@@ -123,6 +125,9 @@ impl OggPlayer {
             OggPlayerMessage::AddListener(listener) => {
                 self.listeners.push(listener);
             },
+            OggPlayerMessage::GetHead(cb) => {
+                cb.send(self.get_head()).expect("Should execute cb");
+            },
         };
 
         Ok(())
@@ -137,7 +142,7 @@ async fn run_ogg_player(mut op: OggPlayer, mut receiver: mpsc::Receiver<OggPlaye
     }
 }
 
-struct OggPlayerHandle {
+pub struct OggPlayerHandle {
     sender: mpsc::Sender<OggPlayerMessage>,
 }
 
@@ -166,5 +171,16 @@ impl OggPlayerHandle {
             .map_err(|x| x.to_string())?;
 
         Ok(())
+    }
+
+    pub async fn get_head(&self) -> Option<Vec<u8>> {
+        let (tx, rx) = oneshot::channel();
+
+        println!("Getting head........");
+        let _ = self.sender
+            .send(OggPlayerMessage::GetHead(tx))
+            .await;
+
+        rx.await.expect("Task has been killed")
     }
 }
