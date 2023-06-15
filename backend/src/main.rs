@@ -2,7 +2,7 @@ mod ogg;
 mod socket_manager;
 mod ogg_player;
 
-use std::{io, sync::Arc};
+use std::{io, sync::Arc, env};
 use tokio::{net::TcpListener, sync::mpsc, io::{AsyncReadExt, AsyncWriteExt}};
 use socket_manager::{SocketManagerHandle, SocketManager};
 use ogg_player::OggPlayer;
@@ -12,8 +12,9 @@ use crate::ogg_player::OggPlayerEvent;
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let socket_manager = Arc::new(SocketManagerHandle::new());
+    let port: String = env::var("PORT").expect("Should specify a PORT env variable");
 
-    println!("Up running on port 8080");
+    println!("Up running on port {port}");
     let ogg_player = Arc::new(OggPlayer::new());
 
     let ogg_player_controller = ogg_player.clone();
@@ -29,6 +30,7 @@ async fn main() -> io::Result<()> {
     );
 
     let streaming_server_handle = init_streaming_server(
+        &port,
         ogg_player.clone(),
         socket_manager.clone(),
     );
@@ -65,10 +67,11 @@ async fn init_player(
 }
 
 async fn init_streaming_server(
+    port: &str,
     ogg_player: Arc<OggPlayer>,
     socket_manager: Arc<SocketManagerHandle>,
 ) -> Result<(), String> {
-    let listener = TcpListener::bind("0.0.0.0:8080")
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .map_err(|x| x.to_string())?;
     tokio::spawn(async move {

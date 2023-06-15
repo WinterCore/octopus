@@ -8,3 +8,7 @@ edition = "2021"
 [dependencies]
 # hyper = { version = "0.14", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
+
+[[bin]]
+name = "octopus-backend"
+path = "backend/src/main.rs"

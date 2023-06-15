@@ -63,7 +63,11 @@ impl OggPlayer {
         let i = *self.curr_page_idx.lock().await;
 
         if let Some(ref data) = *ogg_data {
-            return Some(data[(i - 4).max(0)..i].iter().map(|x| x.serialize()).flatten().collect());
+            if data.len() == i {
+                return None
+            }
+
+            return Some(data[(i - 4).max(0)..i].iter().map(|x| x.serialize()).flatten().collect())
         }
 
         None
