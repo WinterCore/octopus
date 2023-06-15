@@ -3,9 +3,9 @@ mod socket_manager;
 mod ogg_player;
 
 use std::{io, sync::Arc};
-use tokio::{net::TcpListener, sync::mpsc, io::{AsyncReadExt, AsyncWriteExt}, task::JoinHandle};
+use tokio::{net::TcpListener, sync::mpsc, io::{AsyncReadExt, AsyncWriteExt}};
 use socket_manager::{SocketManagerHandle, SocketManager};
-use ogg_player::OggPlayerHandle;
+use ogg_player::OggPlayer;
 
 use crate::ogg_player::OggPlayerEvent;
 
@@ -14,11 +14,11 @@ async fn main() -> io::Result<()> {
     let socket_manager = Arc::new(SocketManagerHandle::new());
 
     println!("Up running on port 8080");
-    let ogg_player = Arc::new(OggPlayerHandle::new());
+    let ogg_player = Arc::new(OggPlayer::new());
 
     let ogg_player_controller = ogg_player.clone();
     let controlled_player_handle = tokio::spawn(async move {
-        ogg_player_controller.load_file("/home/winter/Downloads/someday-that-summer.opus".to_owned())
+        ogg_player_controller.load_file("/home/winter/Downloads/someday-that-summer.opus")
             .await
             .expect("Should load file");
     });
@@ -43,12 +43,12 @@ async fn main() -> io::Result<()> {
 }
 
 async fn init_player(
-    ogg_player: Arc<OggPlayerHandle>,
+    ogg_player: Arc<OggPlayer>,
     socket_manager: Arc<SocketManagerHandle>,
 ) -> Result<(), String> {
     tokio::spawn(async move {
         let (tx, mut rx) = mpsc::channel(5);
-        ogg_player.add_listener(tx).await.expect("Should subscribe to player");
+        ogg_player.add_listener(tx).await;
         while let Some(data) = rx.recv().await {
             println!("Received player data");
 
@@ -65,7 +65,7 @@ async fn init_player(
 }
 
 async fn init_streaming_server(
-    ogg_player: Arc<OggPlayerHandle>,
+    ogg_player: Arc<OggPlayer>,
     socket_manager: Arc<SocketManagerHandle>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind("0.0.0.0:8080")
@@ -96,10 +96,18 @@ async fn init_streaming_server(
 
             let head = ogg_player.get_head().await;
 
-            println!("Received head {:?}", head);
             if let Some(data) = head {
                 match SocketManager::send_to_socket(&mut socket, &data).await {
                     Err(_) => eprintln!("[ERROR]: Failed to send header pages to client {}", addr),
+                    _ => {},
+                }
+            }
+
+            let buffer_data = ogg_player.get_initial_buffer_data().await;
+
+            if let Some(data) = buffer_data {
+                match SocketManager::send_to_socket(&mut socket, &data).await {
+                    Err(_) => eprintln!("[ERROR]: Failed to send buffer pages to client {}", addr),
                     _ => {},
                 }
             }
