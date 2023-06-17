@@ -3,7 +3,7 @@ mod socket_manager;
 mod ogg_player;
 
 use std::{io, sync::Arc, env};
-use tokio::{net::TcpListener, sync::mpsc, io::{AsyncReadExt, AsyncWriteExt}};
+use tokio::{net::TcpListener, sync::mpsc, time::{sleep, Duration}, io::{AsyncReadExt, AsyncWriteExt}};
 use socket_manager::{SocketManagerHandle, SocketManager};
 use ogg_player::OggPlayer;
 
@@ -17,13 +17,6 @@ async fn main() -> io::Result<()> {
     println!("Up running on port {port}");
     let ogg_player = Arc::new(OggPlayer::new());
 
-    let ogg_player_controller = ogg_player.clone();
-    let controlled_player_handle = tokio::spawn(async move {
-        ogg_player_controller.load_file("/home/winter/Downloads/someday-that-summer.opus")
-            .await
-            .expect("Should load file");
-    });
-
     let player_handle = init_player(
         ogg_player.clone(),
         socket_manager.clone(),
@@ -35,8 +28,25 @@ async fn main() -> io::Result<()> {
         socket_manager.clone(),
     );
 
+    let ogg_player_controller = ogg_player.clone();
+    let ogg_player_controller2 = ogg_player.clone();
+
+    let controlled_player_handle = tokio::spawn(async move {
+        ogg_player_controller.load_file("/home/winter/Downloads/someday-that-summer.opus")
+            .await
+            .expect("Should load file");
+    });
+    let controlled_player2_handle = tokio::spawn(async move {
+        sleep(Duration::from_secs(5)).await;
+        ogg_player_controller2.load_file("/home/winter/Downloads/when-you-were-young.opus")
+            .await
+            .expect("Should load file");
+    });
+
+
     let _ = tokio::join!(
         controlled_player_handle,
+        controlled_player2_handle,
         player_handle,
         streaming_server_handle,
     );
@@ -71,6 +81,7 @@ async fn init_streaming_server(
     ogg_player: Arc<OggPlayer>,
     socket_manager: Arc<SocketManagerHandle>,
 ) -> Result<(), String> {
+    println!("init listener");
     let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .map_err(|x| x.to_string())?;

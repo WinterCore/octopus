@@ -1,3 +1,16 @@
+<script context="module" lang="ts">
+    export interface ITimeProgress {
+        readonly currTime: number;
+        readonly totalTime: number;
+    }
+
+    export interface IAudioMetaData {
+        readonly name: string;
+        readonly image: string | undefined;
+        readonly author: string | undefined;
+    }
+</script>
+
 <script lang="ts">
     import {getArc} from "../lib/math"
     import {preloadImage} from "../lib/image";
@@ -5,9 +18,8 @@
     import {secondsToTime} from "../lib/time";
 
     export let strokeWidth: number;
-    export let time: number;
-    export let totalTime: number;
-    export let image: string = "https://en.gravatar.com/userimage/59286606/5642fce1fc1062708b31c90e2c381a55.jpg?size=512";
+    export let progress: ITimeProgress | undefined;
+    export let audioMetaData: IAudioMetaData | undefined;
 
     const startAngle = 0;
     const endAngle = Math.PI * 1.65;
@@ -31,61 +43,94 @@
     const iw = (radius * 2) - (imagePadding * 2);
     const ih = (radius * 2) - (imagePadding * 2);
 
-    const pathFull = getArc([cx, cy], [r, r], startAngle, endAngle, rotate);
-    const percentage = (time / totalTime);
-    const currEndAngle = endAngle * percentage;
-    const pathCurrent = getArc([cx, cy], [r, r], startAngle, currEndAngle, rotate);
 
-    const gg = currEndAngle + rotate;
-    const px = Math.cos(gg) * r + cx;
-    const py = Math.sin(gg) * r + cy;
+    function getProgressParams() {
+        if (! progress) {
+            return undefined;
+        }
+
+        const { currTime, totalTime } = progress;
+        const pathFull = getArc([cx, cy], [r, r], startAngle, endAngle, rotate);
+        const percentage = (currTime / totalTime);
+        const currEndAngle = endAngle * percentage;
+        const pathCurrent = getArc([cx, cy], [r, r], startAngle, currEndAngle, rotate);
+
+        const gg = currEndAngle + rotate;
+        const px = Math.cos(gg) * r + cx;
+        const py = Math.sin(gg) * r + cy;
+
+        return {
+            pathFull,
+            pathCurrent,
+            px,
+            py,
+        };
+    }
+
+    const progressParams = getProgressParams();
 </script>
 
 <svg xmlns="http://www.w3.org/2000/svg"
      {...$$restProps}
-     class="select-none"
+     class={`select-none ${$$props.class}`}
      viewBox="0 0 300 310"
      version="1.1">
-    <text x={105 + halfPr}
-          y={15 + halfPr}
-          font-size="12"
-          text-anchor="right"
-          fill="#FFFFFFA0">
-        {secondsToTime(time)}
-    </text>
-    <text x={145 + halfPr} y={13.5 + halfPr} fill="#FFFFFF55" font-size="12" text-anchor="middle">|</text>
-    <text x={155 + halfPr}
-          y={15 + halfPr}
-          font-size="12"
-          text-anchor="left"
-          fill="#EABF8B">
-        {secondsToTime(totalTime)}
-    </text>
+    {#if progress}
+        <text x={105 + halfPr}
+              y={15 + halfPr}
+              font-size="12"
+              text-anchor="right"
+              fill="#FFFFFFA0">
+            {secondsToTime(progress.currTime)}
+        </text>
+        <text x={145 + halfPr}
+              y={13.5 + halfPr}
+              fill="#FFFFFF55"
+              font-size="12"
+              font-weight="bold"
+              text-anchor="middle">|</text>
+        <text x={155 + halfPr}
+              y={15 + halfPr}
+              font-size="12"
+              text-anchor="left"
+              fill="#EABF8B">
+            {secondsToTime(progress.totalTime)}
+        </text>
+    {/if}
     <foreignObject x={ix}
                    y={iy}
                    width={iw}
                    height={ih}>
-        {#await preloadImage(image)}
+        {#if audioMetaData?.image}
+                {#await preloadImage(audioMetaData.image)}
+                    <div class="bg-white/20 w-full h-full rounded-full"></div>
+                {:then}
+                    <img in:fly alt="poster"
+                         class="rounded-full"
+                         src={audioMetaData.image} />
+                {:catch}
+                    <div class="bg-white/20 w-full h-full rounded-full"></div>
+                {/await}
+        {:else}
             <div class="bg-white/20 w-full h-full rounded-full"></div>
-        {:then}
-            <img in:fly alt="poster"
-                 class="rounded-full"
-                 src={image} />
-        {:catch}
-            <div class="bg-white/20 w-full h-full rounded-full"></div>
-        {/await}
+        {/if}
     </foreignObject>
-    <path d={pathFull}
-          fill="none"
-          stroke-width={strokeWidth}
-          stroke-linecap="round"
-          stroke="#FFFFFF22" />
+    {#if progressParams}
+        <path d={progressParams.pathFull}
+              fill="none"
+              stroke-width={strokeWidth}
+              stroke-linecap="round"
+              stroke="#FFFFFF22" />
 
-    <path d={pathCurrent}
-          fill="none"
-          stroke-width={strokeWidth}
-          stroke-linecap="round"
-          stroke="#EABF8B" />
+        <path d={progressParams.pathCurrent}
+              fill="none"
+              stroke-width={strokeWidth}
+              stroke-linecap="round"
+              stroke="#EABF8B" />
 
-    <circle cx={px} cy={py} fill="#EABF8B" r={pr} />
+        <circle cx={progressParams.px}
+                cy={progressParams.py}
+                fill="#EABF8B"
+                r={pr} />
+    {/if}
 </svg>

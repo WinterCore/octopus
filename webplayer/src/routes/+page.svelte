@@ -3,5 +3,5 @@
 </script>
 
 <div class="h-full flex justify-center items-center">
-    <Player progress={0.5} />
+    <Player />
 </div>

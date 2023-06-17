@@ -83,6 +83,8 @@ impl OggPlayer {
         drop(ogg_data);
 
         *self.curr_page_idx.lock().await = 0;
+        *self.prev_page_timestamp.lock().await = 0;
+        println!("Loaded file {path}");
         self.play().await?;
 
         Ok(())
