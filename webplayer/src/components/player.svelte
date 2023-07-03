@@ -1,7 +1,14 @@
 <script lang="ts">
     import Progress from "./progress.svelte";
     import PlayIcon from "../icons/play.svelte";
+    import {onDestroy} from "svelte";
 
+    let time = 20;
+    let totalTime = 500;
+
+    const progressInterval = setInterval(() => time += 20, 1000);
+
+    onDestroy(() => clearInterval(progressInterval));
 </script>
 
 <div class="w-full max-w-[400px] px-2">
@@ -14,8 +21,15 @@
     <Progress strokeWidth={4}
               time={155}
               totalTime={155}
-              audioMetaData={undefined}
-              progress={undefined}
+              audioMetaData={{
+                name: "Potato",
+                author: undefined,
+                image: "https://encrypted-tbn0.gstatic.com/licensed-image?q=tbn:ANd9GcRisdJNBLznLQcXdxtaD4GSBYCWaviucAhaOpoe9tt_yC7kzGvGHtjtGMfdYynM3x-ImyQ1UjgcnmyJ1WQ",
+              }}
+              progress={{
+                currTime: time,
+                totalTime,
+              }}
               class="w-full h-full mt-4" />
 
     <div class="flex justify-center mt-12">

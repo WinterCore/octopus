@@ -12,7 +12,7 @@
 </script>
 
 <script lang="ts">
-    import {getArc} from "../lib/math"
+    import {clamp, getArc} from "../lib/math"
     import {preloadImage} from "../lib/image";
     import {fly} from "svelte/transition";
     import {secondsToTime} from "../lib/time";
@@ -44,14 +44,11 @@
     const ih = (radius * 2) - (imagePadding * 2);
 
 
-    function getProgressParams() {
-        if (! progress) {
-            return undefined;
-        }
-
+    function getProgressParams(progress: ITimeProgress) {
         const { currTime, totalTime } = progress;
+
         const pathFull = getArc([cx, cy], [r, r], startAngle, endAngle, rotate);
-        const percentage = (currTime / totalTime);
+        const percentage = clamp(0, 1, (currTime / totalTime));
         const currEndAngle = endAngle * percentage;
         const pathCurrent = getArc([cx, cy], [r, r], startAngle, currEndAngle, rotate);
 
@@ -67,7 +64,9 @@
         };
     }
 
-    const progressParams = getProgressParams();
+    let progressParams: ReturnType<typeof getProgressParams> | undefined = undefined;
+
+    $: progressParams = progress ? getProgressParams(progress) : undefined;
 </script>
 
 <svg xmlns="http://www.w3.org/2000/svg"
@@ -76,15 +75,15 @@
      viewBox="0 0 300 310"
      version="1.1">
     {#if progress}
-        <text x={105 + halfPr}
+        <text x={135 + halfPr}
               y={15 + halfPr}
               font-size="12"
-              text-anchor="right"
+              text-anchor="end"
               fill="#FFFFFFA0">
             {secondsToTime(progress.currTime)}
         </text>
         <text x={145 + halfPr}
-              y={13.5 + halfPr}
+              y={14 + halfPr}
               fill="#FFFFFF55"
               font-size="12"
               font-weight="bold"
@@ -92,7 +91,7 @@
         <text x={155 + halfPr}
               y={15 + halfPr}
               font-size="12"
-              text-anchor="left"
+              text-anchor="start"
               fill="#EABF8B">
             {secondsToTime(progress.totalTime)}
         </text>
@@ -102,15 +101,15 @@
                    width={iw}
                    height={ih}>
         {#if audioMetaData?.image}
-                {#await preloadImage(audioMetaData.image)}
-                    <div class="bg-white/20 w-full h-full rounded-full"></div>
-                {:then}
-                    <img in:fly alt="poster"
-                         class="rounded-full"
-                         src={audioMetaData.image} />
-                {:catch}
-                    <div class="bg-white/20 w-full h-full rounded-full"></div>
-                {/await}
+            {#await preloadImage(audioMetaData.image)}
+                <div class="bg-white/20 w-full h-full rounded-full"></div>
+            {:then}
+                <img in:fly alt="poster"
+                     class="rounded-full h-full w-full object-cover"
+                     src={audioMetaData.image} />
+            {:catch}
+                <div class="bg-white/20 w-full h-full rounded-full"></div>
+            {/await}
         {:else}
             <div class="bg-white/20 w-full h-full rounded-full"></div>
         {/if}

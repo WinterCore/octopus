@@ -48,3 +48,7 @@ export const getArc = (
 
     return `M ${sx} ${sy} A ${rx} ${ry} ${angle} ${laf} ${sf} ${ex} ${ey}`;
 };
+
+
+export const clamp = (low: number, high: number, x: number) =>
+    x < low ? low : (x > high) ? high : x;
