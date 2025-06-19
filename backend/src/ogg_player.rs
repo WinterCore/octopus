@@ -1,148 +1,127 @@
-use std::time::Duration;
+use std::{fs::File, io::BufReader, time::{Duration, SystemTime, UNIX_EPOCH}};
+use ogg::{reading::PacketReader};
+use opus::{Application, Channels, Decoder as OpusDecoder, Encoder as OpusEncoder};
 
-use tokio::{fs, sync::{mpsc, Mutex}, time::sleep};
+use tokio::{sync::{mpsc, Mutex}, task, time::sleep};
 
-use crate::ogg::{OggPage, OggParser};
+const SAMPLE_RATE: u32 = 48_000;
+const CHANNELS: usize = 2;
+
+fn generate_serial() -> u32 {
+    // Generate a consistent serial number (can be random)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+
+        .subsec_nanos()
+}
 
 pub enum OggPlayerEvent {
     AudioData {
-        data: Vec<u8>,
-        timestamp: u64,
+        raw_opus_data: Vec<u8>,
+        granule_position: u64,
     },
 }
 
-
 pub struct OggPlayer {
-    ogg_data: Mutex<Option<Vec<OggPage>>>,
-    curr_page_idx: Mutex<usize>,
-    prev_page_timestamp: Mutex<u64>,
+    // buffer_data: Mutex<Vec<i16>>, // pcm data
     listeners: Mutex<Vec<mpsc::Sender<OggPlayerEvent>>>,
+    granule_position: Mutex<u64>,
+    active_file_id: Mutex<u64>,
 }
 
 impl OggPlayer {
     pub fn new() -> Self {
         Self {
-            ogg_data: Mutex::new(None),
-            curr_page_idx: Mutex::new(0),
-            prev_page_timestamp: Mutex::new(0),
             listeners: Mutex::new(vec![]),
+            granule_position: Mutex::new(0),
+            active_file_id: Mutex::new(0),
         }
-    }
-
-    pub async fn get_head(&self) -> Option<Vec<u8>> {
-        let ogg_data = self.ogg_data.lock().await;
-
-        let bin: Vec<_> = ogg_data
-            .as_ref()?
-            .iter()
-            .take_while(|p| {
-                let first_segment = match p.segments.get(0) {
-                    None => return false,
-                    Some(segment) => segment,
-                };
-
-                // TODO: this is ugly but it works
-                if first_segment.data.len() >= 8 {
-                    let magic_sig = &first_segment.data[..8];
-
-                    magic_sig == "OpusHead".as_bytes()
-                    || magic_sig == "OpusTags".as_bytes()
-                } else {
-                    false
-                }
-            })
-            .map(|x| x.serialize())
-            .flatten()
-            .collect();
-
-        Some(bin)
-    }
-
-    pub async fn get_initial_buffer_data(&self) -> Option<Vec<u8>> {
-        let ogg_data = self.ogg_data.lock().await;
-        let i = *self.curr_page_idx.lock().await;
-
-        if let Some(ref data) = *ogg_data {
-            if data.len() == i {
-                return None
-            }
-
-            return Some(data[(i - 4).max(0)..i].iter().map(|x| x.serialize()).flatten().collect())
-        }
-
-        None
     }
 
     pub async fn load_file(&self, path: &str) -> Result<(), String> {
-        let data = fs::read(path)
-            .await
-            .map_err(|x| x.to_string())?;
+        let cloned_path = path.to_string();
 
-        let mut ogg_data = self.ogg_data.lock().await;
-        *ogg_data = Some(OggParser::new(&data).into_iter().collect());
-        drop(ogg_data);
+        println!("Reading file {}", path);
+        // TODO: Locking twice is not ideal
+        *self.active_file_id.lock().await += 1;
+        let file_id = *self.active_file_id.lock().await;
 
-        *self.curr_page_idx.lock().await = 0;
-        *self.prev_page_timestamp.lock().await = 0;
-        println!("Loaded file {path}");
-        self.play().await?;
+        let file = task::spawn_blocking(move || {
+            File::open(cloned_path.to_string()).map_err(|x| x.to_string())
+        }).await.expect("Should spawn_blocking")?;
 
-        Ok(())
-    }
+        let buf_reader = BufReader::new(file);
 
-    pub async fn add_listener(&self, listener: mpsc::Sender<OggPlayerEvent>) {
-        let mut listeners = self.listeners.lock().await;
-        listeners.push(listener);
-    }
+        let mut packet_reader = PacketReader::new(buf_reader);
 
-    pub async fn play(&self) -> Result<(), String> {
-        let buffer_millis = 2000f64;
+        let mut opus_decoder = OpusDecoder::new(SAMPLE_RATE, Channels::Stereo).map_err(|x| format!("Decoder {}", x.to_string()))?;
+        let mut decode_buf = vec![0i16; 1920 * CHANNELS];
 
-        loop {
-            let i = {
-                let mut curr = self.curr_page_idx.lock().await;
-                let val = *curr;
-                *curr += 1;
-                val
-            };
+        let mut opus_encoder = OpusEncoder::new(SAMPLE_RATE, Channels::Stereo, Application::Audio).map_err(|x| x.to_string())?;
 
-            let ogg_data = self.ogg_data.lock().await;
-            let data = match ogg_data.as_ref() {
-                None => return Err("There's no loaded file to be played!".to_owned()),
-                Some(data) => data,
-            };
+        let max_buffer_size = 5 * 48_000 * 2 * (16 / 8);
 
-            let page = match data.get(i).cloned() {
-                Some(page) => page,
-                None => break,
-            };
-            drop(data);
-            drop(ogg_data);
+        while let Some(packet) = packet_reader.read_packet().map_err(|x| x.to_string())? {
+            let active_file_id = *self.active_file_id.lock().await;
 
-            let page_timestamp = page.granule_position as f64 / 48_000f64 * 1000f64;
-            let prev_page_timestamp = *self.prev_page_timestamp.lock().await as f64;
+            println!("Copmaring id {} == {}", active_file_id, file_id);
+            if active_file_id != file_id {
+                println!("Changed file {}", file_id);
+                break;
+            }
+
+            if packet.data.starts_with(b"OpusHead") || packet.data.starts_with(b"OpusTags") {
+
+                continue;
+            }
+
+            let frame_size = opus_decoder
+                .decode(&packet.data, &mut decode_buf, false)
+                .map_err(|x| x.to_string())?;
+
+            let duration_ms = (frame_size as f32 / 48_000 as f32 * 1000.0).round() as u64;
+
+            let pcm = &decode_buf[..frame_size * CHANNELS];
+
+            let mut gp = self.granule_position.lock().await;
+            *gp += frame_size as u64;
+
+            let absgp = *gp;
+            println!("GP: {}", absgp);
+            drop(gp);
+
+
+            /*
+            let mut buffer_data = self.buffer_data.lock().await;
+            // If the buffer is empty fill it
+            if buffer_data.len() < max_buffer_size {
+                buffer_data.extend_from_slice(pcm);
+            }
+            */
+            
+            let mut encoded = vec![0u8; 4096];
+            let encoded_len = opus_encoder.encode(pcm, &mut encoded).map_err(|x| x.to_string())?;
 
             for listener in self.listeners.lock().await.iter() {
                 listener
                     .send(OggPlayerEvent::AudioData {
-                        data: page.serialize(),
-                        timestamp: prev_page_timestamp as u64,
+                        raw_opus_data: encoded[..encoded_len].to_vec(),
+                        granule_position: absgp,
                     })
                     .await
                     .map_err(|x| x.to_string())?;
             }
 
-            let sleep_duration = page_timestamp - prev_page_timestamp;
-
-            println!("Sleep duration: {} {}", prev_page_timestamp, sleep_duration);
-            if sleep_duration > buffer_millis {
-                sleep(Duration::from_millis((sleep_duration - buffer_millis) as u64)).await;
-                let prev_page_timestamp = (prev_page_timestamp + (sleep_duration - buffer_millis)) as u64;
-                *self.prev_page_timestamp.lock().await = prev_page_timestamp;
-                println!("Storing {}", prev_page_timestamp);
-            }
+            sleep(Duration::from_millis(duration_ms)).await;
         }
-
+        
         Ok(())
+    }
+
+    pub async fn add_listener(&self, listener: mpsc::Sender<OggPlayerEvent>) {
+        let mut listeners = self.listeners.lock().await;
+
+        listeners.push(listener);
     }
 }

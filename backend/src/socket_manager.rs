@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::str;
 
 use tokio::{net::TcpStream, io::{AsyncWriteExt, self}, sync::{oneshot, mpsc}};
 
@@ -50,10 +49,10 @@ impl SocketManager {
 
     pub async fn send_to_socket(socket: &mut TcpStream, buf: &[u8]) -> Result<(), String> {
         let result = async {
-            socket.write(format!("{:X}", buf.len()).as_bytes()).await?;
-            socket.write("\r\n".as_bytes()).await?;
+            // socket.write(format!("{:X}", buf.len()).as_bytes()).await?;
+            // socket.write("\r\n".as_bytes()).await?;
             socket.write_all(buf).await?;
-            socket.write("\r\n".as_bytes()).await?;
+            // socket.write("\r\n".as_bytes()).await?;
             socket.flush().await?;
 
             Ok::<(), io::Error>(())
