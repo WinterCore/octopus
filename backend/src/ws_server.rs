@@ -52,12 +52,14 @@ async fn accept_connection(
                         r#"{{
                             "name": "{}",
                             "author": "{}",
-                            "active_file_start_granule_position": {},
+                            "active_file_start_time_ms": {},
+                            "active_file_duration_ms": {},
                             "image": {}
                         }}"#,
                         metadata.name,
                         metadata.author,
-                        metadata.start_granule_position,
+                        read_ctx.player.get_current_file_start_time_ms().await,
+                        metadata.duration_ms,
                         if let Some(url) = metadata.image { format!("\"{}\"", url) } else { "null".to_string() },
                     );
 

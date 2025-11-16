@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.8",
+    "@wasm-audio-decoders/ogg-vorbis": "^0.1.20",
     "lit": "^3.3.0",
+    "ogg-opus-decoder": "^1.7.3",
     "tailwindcss": "^4.1.8"
   },
   "devDependencies": {

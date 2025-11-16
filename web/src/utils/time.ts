@@ -3,8 +3,8 @@ const prefixZeroes = (v: number, n: number) =>
 
 export const secondsToHumanReadable = (seconds: number) => {
     const hours = Math.floor(seconds / 60 / 60);
-    const minutes = Math.floor(seconds / 60); 
-    const secs = seconds % 60;
+    const minutes = Math.floor((seconds / 60) % 60);
+    const secs = Math.ceil(seconds % 60);
 
     if (hours > 0) {
         return `${hours}:${prefixZeroes(minutes, 2)}:${prefixZeroes(secs, 2)}`;

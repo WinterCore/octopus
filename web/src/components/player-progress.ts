@@ -88,7 +88,7 @@ export class PlayerProgress extends LitElement {
                 y=${15 + halfPr}
                 font-size="12"
                 text-anchor="end"
-                fill="#FFFFFFA0">
+                fill="#EABF8B">
             ${secondsToHumanReadable(this.progress.current)}
           </text>
           <text x=${145 + halfPr}
@@ -101,7 +101,7 @@ export class PlayerProgress extends LitElement {
                 y=${15 + halfPr}
                 font-size="12"
                 text-anchor="start"
-                fill="#EABF8B">
+                fill="#FFFFFFA0">
             ${secondsToHumanReadable(this.progress.total)}
           </text>
         `}
@@ -110,12 +110,7 @@ export class PlayerProgress extends LitElement {
                        y=${iy}
                        width=${iw}
                        height=${ih}>
-          ${this.metadata?.image && svg`
-            <img alt="poster" class="rounded-full h-full w-full object-cover" src="${this.metadata.image}" />
-          `}
-          ${!this.metadata?.image && svg`
-            <div class="bg-white/20 w-full h-full rounded-full"></div>
-          `}
+          <img alt="poster" draggable="false" class="select-none rounded-full h-full w-full object-cover" src="${this.metadata?.image ?? "/logo.webp"}" />
         </foreignObject>
 
         ${progressParams && svg`

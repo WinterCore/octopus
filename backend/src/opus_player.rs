@@ -1,13 +1,13 @@
-use std::{fs::File, io::BufReader, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{fs::File, io::BufReader, sync::Arc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use ogg::{reading::PacketReader};
 use opus::{Application, Channels, Decoder as OpusDecoder, Encoder as OpusEncoder};
 
 use tokio::{sync::{mpsc, Mutex, Notify}, task, time::sleep};
 
-const SAMPLE_RATE: u32 = 48_000;
-const CHANNELS: usize = 2;
+pub const SAMPLE_RATE: u32 = 48_000;
+pub const CHANNELS: usize = 2;
 
-const BUFFER_SIZE_MS: usize = 5000; // 5 seconds buffer
+const BUFFER_SIZE_MS: usize = 3000; // 5 seconds buffer
 const MAX_HEADSTART_BUFFER_SIZE: usize = ((BUFFER_SIZE_MS as f32 / 1000f32) * SAMPLE_RATE as f32 * CHANNELS as f32) as usize;
 
 pub const OPUS_HEAD: &[u8] = &[
@@ -69,9 +69,11 @@ pub struct ActiveFile {
     pub name: String,
     pub author: String,
     pub image: Option<String>,
+    pub duration_ms: u64,
 }
 
 pub struct OpusPlayer {
+    start_instant: Mutex<Option<Instant>>,
     buffer_data: Mutex<Vec<i16>>, // pcm data
     listeners: Mutex<Vec<mpsc::Sender<OpusPlayerEvent>>>,
     granule_position: Mutex<u64>,
@@ -81,6 +83,7 @@ pub struct OpusPlayer {
 impl OpusPlayer {
     pub fn new() -> Self {
         Self {
+            start_instant: Mutex::new(None),
             buffer_data: Mutex::new(Vec::new()),
             listeners: Mutex::new(vec![]),
             granule_position: Mutex::new(0),
@@ -90,6 +93,7 @@ impl OpusPlayer {
                 name: "Unknown".to_string(),
                 author: "Unknown Author".to_string(),
                 image: None,
+                duration_ms: 0,
             }),
         }
     }
@@ -100,6 +104,34 @@ impl OpusPlayer {
         return active_file.clone();
     }
 
+    pub async fn get_current_file_start_time_ms(&self) -> u64 {
+        let active_file = self.active_file.lock().await;
+
+        let now_playing_ms = active_file.start_granule_position as f64 / 48_000 as f64 * 1000.0;
+
+        return now_playing_ms as u64;
+    }
+
+    fn get_file_duration(path: &str) -> Result<u64, String> {
+        let file = File::open(path).map_err(|x| x.to_string())?;
+        let buf_reader = BufReader::new(file);
+        let mut packet_reader = PacketReader::new(buf_reader);
+
+        let mut last_granule_position = 0u64;
+
+        // Read through all packets to find the last granule position
+        while let Some(packet) = packet_reader.read_packet().map_err(|x| x.to_string())? {
+            if packet.absgp_page() > 0 {
+                last_granule_position = packet.absgp_page();
+            }
+        }
+
+        // Convert granule position to milliseconds
+        let duration_ms = (last_granule_position as f64 / SAMPLE_RATE as f64 * 1000.0) as u64;
+
+        Ok(duration_ms)
+    }
+
     pub async fn play_file(
         &self,
         path: &str,
@@ -107,10 +139,23 @@ impl OpusPlayer {
         let cloned_path = path.to_string();
 
         println!("Playing file {}", path);
+
+        // Calculate file duration
+        let duration_ms = Self::get_file_duration(path).unwrap_or(0);
+        println!("File duration: {:.2} seconds ({} ms)", duration_ms as f64 / 1000.0, duration_ms);
+
         // TODO: Locking twice is not ideal
         let mut active_file = self.active_file.lock().await;
         active_file.id += 1;
         active_file.start_granule_position = *self.granule_position.lock().await;
+        active_file.duration_ms = duration_ms;
+
+        {
+            let mut instant = self.start_instant.lock().await;
+            if let None = instant.as_ref() {
+                *instant = Some(Instant::now());
+            }
+        }
 
         let file_id = active_file.id;
         drop(active_file);
@@ -147,7 +192,7 @@ impl OpusPlayer {
                 .decode(&packet.data, &mut decode_buf, false)
                 .map_err(|x| x.to_string())?;
 
-            let duration_ms = (frame_size as f32 / 48_000 as f32 * 1000.0).round() as u64;
+            let frame_duration_ms = frame_size as f64 / 48_000 as f64 * 1000.0;
 
             let pcm = &decode_buf[..frame_size * CHANNELS];
             // println!("FRAME_SIZE {}", frame_size);
@@ -157,8 +202,11 @@ impl OpusPlayer {
             *gp += frame_size as u64;
 
             let absgp = *gp;
-            // println!("GP: {}", absgp);
             drop(gp);
+
+            let now_playing_ms = absgp as f64 / 48_000 as f64 * 1000.0;
+
+            // println!("GP: {}", absgp);
             // println!("FRAME_SIZE {:?}", frame_size);
 
             let mut encoded = vec![0u8; 4096];
@@ -197,16 +245,26 @@ impl OpusPlayer {
             if buffer_data.len() < MAX_HEADSTART_BUFFER_SIZE {
                 buffer_data.extend_from_slice(pcm);
             } else {
+                // Do a sliding window
+
                 // Remove from start
                 buffer_data.drain(0..(frame_size * 2));
 
-                // Do a sliding window
                 // Add to the end
                 buffer_data.extend_from_slice(pcm);
 
-                sleep(Duration::from_millis(duration_ms)).await;
+                let instant_option = self.start_instant.lock().await;
+
+
+                if let Some(instant) = instant_option.as_ref() {
+                    let lag_ms = now_playing_ms as i64 - (instant.elapsed().as_millis() as i64 + BUFFER_SIZE_MS as i64);
+                    sleep(Duration::from_millis(lag_ms.max(0) as u64)).await;
+                } else {
+                    sleep(Duration::from_millis(frame_duration_ms as u64)).await;
+                }
             }
         }
+
 
         Ok(())
     }
@@ -219,8 +277,6 @@ impl OpusPlayer {
         let mut opus_encoder = OpusEncoder::new(SAMPLE_RATE, Channels::Stereo, Application::Audio)
             .map_err(|x| x.to_string())
             .expect("Should create opus encoder");
-
-        println!("BUFFER_SIZE_MS: {} {}", MAX_HEADSTART_BUFFER_SIZE, packets);
 
         let buffer_data = self.buffer_data.lock().await;
 

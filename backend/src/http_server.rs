@@ -1,6 +1,6 @@
 use std::{convert::Infallible, io::{Cursor, Read, Seek, SeekFrom}, net::SocketAddr, sync::Arc};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
-use hyper::{body::{self, Bytes, Frame}, server::conn::http1, service::service_fn, Method, Request, Response, StatusCode};
+use hyper::{body::{self, Bytes, Frame}, header::{self, HeaderValue}, server::conn::http1, service::service_fn, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use ogg::{PacketWriteEndInfo, PacketWriter};
 use tokio::{net::TcpListener, sync::mpsc};
@@ -84,9 +84,30 @@ async fn main_handler(
     req: Request<body::Incoming>
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     match (req.method(), req.uri().path()) {
+        (&Method::OPTIONS, "/") => {
+            // This is a preflight request. We must respond with the correct CORS headers.
+            let mut response = Response::new(empty());
+            *response.status_mut() = StatusCode::NO_CONTENT; // 204
+
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*")
+            );
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                HeaderValue::from_static("GET, OPTIONS")
+            );
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                HeaderValue::from_static("Content-Type, Authorization")
+            );
+            
+            return Ok(response);
+        },
         (&Method::GET, "/") => {
+
             println!("Connected {:?} {:?}", req.uri().path(), req.headers());
-            let (tx, rx) = mpsc::channel(5);
+            let (tx, rx) = mpsc::channel(500);
 
             let mut ogg_stream = OggStream::new();
 
@@ -128,6 +149,9 @@ async fn main_handler(
             let response = Response::builder()
                 .header("Connection", "keep-alive")
                 .header("Content-Type", "audio/ogg")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type, Authorization")
                 .body(BoxBody::new(stream_body))
                 .expect("Should build body");
 
