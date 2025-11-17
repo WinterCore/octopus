@@ -25,7 +25,7 @@ export class PlayerProgress extends LitElement {
   className: string = "";
 
   @property({ type: Object })
-  progress?: ITimeProgress;
+  progress!: ITimeProgress | null;
 
   @property({ type: Object })
   metadata?: IAudioMetadata;
@@ -56,11 +56,9 @@ export class PlayerProgress extends LitElement {
     const iw = (radius * 2) - (imagePadding * 2);
     const ih = (radius * 2) - (imagePadding * 2);
     
-    function getProgressParams(progress: ITimeProgress) {
-      const { current, total } = progress;
-
+    function getProgressParams(progress: ITimeProgress | null) {
       const pathFull = getArc([cx, cy], [r, r], startAngle, endAngle, rotate);
-      const percentage = clamp(0, 1, (current / total));
+      const percentage = clamp(0, 1, progress ? (progress.current / progress.total) : 0);
       const currEndAngle = endAngle * percentage;
       const pathCurrent = getArc([cx, cy], [r, r], startAngle, currEndAngle, rotate);
 
@@ -69,6 +67,7 @@ export class PlayerProgress extends LitElement {
       const py = Math.sin(gg) * r + cy;
 
       return {
+        isLoading: !progress,
         pathFull,
         pathCurrent,
         px,
@@ -76,7 +75,7 @@ export class PlayerProgress extends LitElement {
       };
     }
     
-    const progressParams = this.progress ? getProgressParams(this.progress) : null;
+    const progressParams = getProgressParams(this.progress);
 
     return html`
       <svg xmlns="http://www.w3.org/2000/svg"
@@ -113,23 +112,28 @@ export class PlayerProgress extends LitElement {
           <img alt="poster" draggable="false" class="select-none rounded-full h-full w-full object-cover" src="${this.metadata?.image ?? "/logo.webp"}" />
         </foreignObject>
 
-        ${progressParams && svg`
+        ${svg`
           <path d=${progressParams.pathFull}
+                class="${progressParams.isLoading ? 'animate-pulse' : ''}"
                 fill="none"
                 stroke-width=${this.strokeWidth}
                 stroke-linecap="round"
                 stroke="#FFFFFF22" />
 
-          <path d=${progressParams.pathCurrent}
-                fill="none"
-                stroke-width=${this.strokeWidth}
-                stroke-linecap="round"
-                stroke="#EABF8B" />
-
-          <circle cx=${progressParams.px}
-                  cy=${progressParams.py}
-                  fill="#EABF8B"
-                  r=${pr} />
+          ${!progressParams.isLoading
+            ? svg`
+              <path d=${progressParams.pathCurrent}
+                    fill="none"
+                    stroke-width=${this.strokeWidth}
+                    stroke-linecap="round"
+                    stroke="#EABF8B" />
+              <circle cx=${progressParams.px}
+                      cy=${progressParams.py}
+                      fill="#EABF8B"
+                      r=${pr} />
+            `
+            : ''
+          }
         `}
       </svg>
     `;

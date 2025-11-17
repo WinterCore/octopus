@@ -1,8 +1,10 @@
-use std::{fs::File, io::BufReader, sync::Arc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::{fs::File, io::{BufReader, Seek}, sync::Arc, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use ogg::{reading::PacketReader};
 use opus::{Application, Channels, Decoder as OpusDecoder, Encoder as OpusEncoder};
 
 use tokio::{sync::{mpsc, Mutex, Notify}, task, time::sleep};
+
+use crate::oeggs::get_opus_comments;
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
@@ -66,7 +68,7 @@ pub enum OpusPlayerEvent {
 pub struct ActiveFile {
     pub id: u64,
     pub start_granule_position: u64,
-    pub name: String,
+    pub title: String,
     pub author: String,
     pub image: Option<String>,
     pub duration_ms: u64,
@@ -90,7 +92,7 @@ impl OpusPlayer {
             active_file: Mutex::new(ActiveFile {
                 id: 0,
                 start_granule_position: 0,
-                name: "Unknown".to_string(),
+                title: "Unknown".to_string(),
                 author: "Unknown Author".to_string(),
                 image: None,
                 duration_ms: 0,
@@ -104,16 +106,17 @@ impl OpusPlayer {
         return active_file.clone();
     }
 
-    pub async fn get_current_file_start_time_ms(&self) -> u64 {
+    pub async fn get_current_file_start_time_ms(&self) -> (u64, u64) {
         let active_file = self.active_file.lock().await;
+        let granule_position = self.granule_position.lock().await;
 
-        let now_playing_ms = active_file.start_granule_position as f64 / 48_000 as f64 * 1000.0;
+        let start_time_ms = active_file.start_granule_position as f64 / 48_000 as f64 * 1000.0;
+        let now_playing_ms = *granule_position as f64 / 48_000 as f64 * 1000.0;
 
-        return now_playing_ms as u64;
+        return (start_time_ms as u64, now_playing_ms as u64);
     }
 
-    fn get_file_duration(path: &str) -> Result<u64, String> {
-        let file = File::open(path).map_err(|x| x.to_string())?;
+    fn get_file_duration(file: &File) -> Result<u64, String> {
         let buf_reader = BufReader::new(file);
         let mut packet_reader = PacketReader::new(buf_reader);
 
@@ -137,18 +140,8 @@ impl OpusPlayer {
         path: &str,
     ) -> Result<(), String> {
         let cloned_path = path.to_string();
-
+        
         println!("Playing file {}", path);
-
-        // Calculate file duration
-        let duration_ms = Self::get_file_duration(path).unwrap_or(0);
-        println!("File duration: {:.2} seconds ({} ms)", duration_ms as f64 / 1000.0, duration_ms);
-
-        // TODO: Locking twice is not ideal
-        let mut active_file = self.active_file.lock().await;
-        active_file.id += 1;
-        active_file.start_granule_position = *self.granule_position.lock().await;
-        active_file.duration_ms = duration_ms;
 
         {
             let mut instant = self.start_instant.lock().await;
@@ -157,12 +150,38 @@ impl OpusPlayer {
             }
         }
 
-        let file_id = active_file.id;
-        drop(active_file);
-
-        let file = task::spawn_blocking(move || {
+        let mut file = task::spawn_blocking(move || {
             File::open(cloned_path.to_string()).map_err(|x| x.to_string())
         }).await.expect("Should spawn_blocking")?;
+
+        let duration_ms = Self::get_file_duration(&file).unwrap_or(0);
+        file.seek(std::io::SeekFrom::Start(0)).map_err(|x| x.to_string())?;
+
+        let ogg_comments_result = get_opus_comments(&mut file);
+        file.seek(std::io::SeekFrom::Start(0)).map_err(|x| x.to_string())?;
+
+        let mut active_file = self.active_file.lock().await;
+
+        match ogg_comments_result {
+            Ok(comments) => {
+                active_file.title = comments.title().unwrap_or("Unknown Title").to_string();
+                active_file.author = comments.artist().unwrap_or("Unknown Author").to_string();
+            },
+            Err(e) => {
+                println!("Failed to read Ogg comments: {}", e);
+            }
+        };
+
+        active_file.id += 1;
+        active_file.start_granule_position = *self.granule_position.lock().await;
+        active_file.duration_ms = duration_ms;
+        let file_id = active_file.id;
+        drop(active_file);
+        
+
+        // Calculate file duration
+        println!("\tFile duration: {:.2} seconds ({} ms)", duration_ms as f64 / 1000.0, duration_ms);
+
 
         let buf_reader = BufReader::new(file);
 
@@ -177,8 +196,7 @@ impl OpusPlayer {
             let active_file = self.active_file.lock().await;
 
             if active_file.id != file_id {
-                println!("Changed file {}", file_id);
-                return Err("Interrupted".to_string());
+                return Err("Playback interrupted: File changed!".to_string());
             }
             drop(active_file);
 

@@ -1,33 +1,17 @@
 import { html, LitElement } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import "./components/player-progress";
-import { OggOpusDecoderWebWorker } from "ogg-opus-decoder";
 import { WebSocketManager } from "./lib/ws-manager";
 import type {ITimeProgress} from "./components/player-progress";
-
-class OggOpusParser {
-  parseOggPage(buffer: ArrayBuffer): number | null {
-    const view = new DataView(buffer);
-
-    // Check for "OggS" magic number
-    if (view.getUint32(0, false) !== 0x4f676753) return null;
-
-    // Granule position at bytes 6-13 (64-bit little-endian)
-    const granuleLow = view.getUint32(6, true);
-    const granuleHigh = view.getUint32(10, true);
-
-    const granulePosition = granuleLow + (granuleHigh * 0x100000000);
-
-    return granulePosition;
-  }
-}
+import { PlaybackController } from "./controllers/playback-controller";
 
 interface AudioMetadata {
-  readonly name: string;
+  readonly title: string;
   readonly author: string;
   readonly image: string | null;
-  readonly active_file_start_time_ms: number;
   readonly active_file_duration_ms: number;
+  readonly active_file_start_time_ms: number;
+  readonly active_file_current_time_ms: number;
 }
 
 @customElement("octopus-app")
@@ -36,19 +20,11 @@ export class Octopus extends LitElement {
     return this;
   }
 
-  @property({ type: Boolean })
-  isPlaying: boolean = false;
-
-  @property({ type: Number })
-  private currentTimeMs: number = 0;
-
-  private audioContext: AudioContext | null = null;
-  private scheduledUntil: number = 0;
-  private abortController: AbortController | null = null;
-  private currentDecoder: OggOpusDecoderWebWorker | null = null;
+  private playback = new PlaybackController(this);
   private wsManager: WebSocketManager;
+
+  @property({ type: Object })
   private metadata: AudioMetadata | null = null;
-  private readonly BUFFER_LOOKAHEAD = 0.1; // 100ms buffer lookahead
 
   constructor() {
     super();
@@ -74,6 +50,8 @@ export class Octopus extends LitElement {
     this.wsManager.onMessage = (data) => {
       console.log('WebSocket message received:', data);
       this.metadata = data as AudioMetadata;
+      this.playback.currentTimeMs = this.metadata.active_file_current_time_ms;
+      console.log('debug', this.metadata);
 
       // Handle incoming messages here
     };
@@ -84,162 +62,23 @@ export class Octopus extends LitElement {
     this.wsManager.connect();
   }
 
-  private async startStream(): Promise<void> {
-    // Stop any existing stream
-    this.stopStream();
-
-    // Create new audio context
-    this.audioContext = new AudioContext();
-    // Initialize with a small lookahead to build up buffer
-    this.scheduledUntil = this.audioContext.currentTime + this.BUFFER_LOOKAHEAD;
-
-    // Create new abort controller
-    this.abortController = new AbortController();
-
-    try {
-      // Create decoder and parser
-      const decoder = new OggOpusDecoderWebWorker();
-      const parser = new OggOpusParser();
-      this.currentDecoder = decoder;
-      await decoder.ready;
-
-      console.log('Decoder ready, starting stream...');
-
-      // Fetch and decode stream
-      const response = await fetch('http://localhost:3000', {
-        signal: this.abortController.signal
-      });
-      const reader = response.body!.getReader();
-
-      while (true) {
-        const {done, value} = await reader.read();
-        if (done) break;
-
-        // Check if we've been aborted
-        if (this.abortController?.signal.aborted) {
-          break;
-        }
-
-        // Parse Ogg page to extract granule position
-        const granulePosition = parser.parseOggPage(value!.buffer);
-
-        // Decode the chunk
-        const result = await decoder.decode(value!);
-
-        // Calculate current time from granule position
-        if (granulePosition !== null && result.sampleRate) {
-          this.currentTimeMs = granulePosition / result.sampleRate * 1000;
-        }
-
-        // Play the decoded audio
-        if (result.channelData && result.channelData.length > 0 && result.samplesDecoded > 0) {
-          this.playAudioData(result.channelData, result.sampleRate);
-        }
-      }
-
-      console.log('Stream ended');
-      decoder.free();
-      this.currentDecoder = null;
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        console.log('Stream aborted');
-      } else {
-        console.error('Error fetching or processing stream:', error);
-      }
-
-      // Clean up decoder
-      if (this.currentDecoder) {
-        this.currentDecoder.free();
-        this.currentDecoder = null;
-      }
-    }
-  }
-
-  private stopStream(): void {
-    // Abort the fetch request
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
-    }
-
-    // Close audio context
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
-    }
-
-    // Free decoder
-    if (this.currentDecoder) {
-      this.currentDecoder.free();
-      this.currentDecoder = null;
-    }
-
-    this.scheduledUntil = 0;
-  }
-
-  private playAudioData(channelData: Float32Array[], sampleRate: number): void {
-    if (!this.audioContext) return;
-
-    const audioBuffer = this.audioContext.createBuffer(
-      channelData.length,
-      channelData[0].length,
-      sampleRate
-    );
-
-    // Copy channel data to audio buffer
-    for (let i = 0; i < channelData.length; i++) {
-      audioBuffer.copyToChannel(channelData[i], i);
-    }
-
-    // Create source and schedule playback
-    const source = this.audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.audioContext.destination);
-
-    // Schedule playback with buffer lookahead to prevent underruns
-    const now = this.audioContext.currentTime;
-
-    // If we've fallen behind, reset to current time + lookahead
-    if (this.scheduledUntil < now + this.BUFFER_LOOKAHEAD) {
-      this.scheduledUntil = now + this.BUFFER_LOOKAHEAD;
-    }
-
-    source.start(this.scheduledUntil);
-    this.scheduledUntil += audioBuffer.duration;
-  }
-  
   disconnectedCallback(): void {
     // Clean up when component is removed
-    this.stopStream();
     this.wsManager.disconnect();
   }
 
   handleTogglePlayClick = async () => {
-    if (this.isPlaying) {
-      // Stop the stream
-      this.stopStream();
-      this.isPlaying = false;
-      console.log('paused');
-    } else {
-      // Start a fresh stream
-      this.isPlaying = true;
-      await this.startStream();
-      console.log('playing');
-    }
+    this.playback.toggle();
+    console.log(this.playback.isPlaying ? 'playing' : 'paused');
   }
 
-  get getProgress(): ITimeProgress {
+  get getProgress(): ITimeProgress | null {
     if (! this.metadata) {
-      return { current: 0, total: 100 };
+      return null;
     }
 
-    console.log('debug', {
-      current: (this.currentTimeMs - this.metadata.active_file_start_time_ms) / 1000,
-      total: this.metadata.active_file_duration_ms / 1000,
-    });
-
     return {
-      current: Math.ceil((this.currentTimeMs - this.metadata.active_file_start_time_ms) / 1000),
+      current: Math.ceil((this.playback.currentTimeMs - this.metadata.active_file_start_time_ms) / 1000),
       total: Math.ceil(this.metadata.active_file_duration_ms / 1000),
     };
   }
@@ -247,18 +86,26 @@ export class Octopus extends LitElement {
   render() {
     return html`
       <main class="bg-gradient-to-b from-[#51756d] to-[#253330] flex-1 flex flex-col justify-center items-center">
-        <h1 class="text-center text-white text-3xl">
-          Song name
-        </h1>
-        <h2 class="text-center text-white/70 text-lg mt-1">
-          Author Smith
-        </h2>
+        ${this.metadata
+          ? html`
+            <h1 class="text-center text-white text-3xl">
+              ${this.metadata ? this.metadata.title : 'Loading...'}
+            </h1>
+            <h2 class="text-center text-white/70 text-lg mt-1">
+              ${this.metadata ? this.metadata.author : 'Loading...'}
+            </h2>
+          `: html`
+            <div role="status" class="max-w-sm animate-pulse flex items-center flex-col gap-4">
+              <div class="h-5 bg-[#FFFFFF22] rounded-full w-48"></div>
+              <div class="h-1.5 bg-[#FFFFFF22] rounded-full w-22"></div>
+            </div>
+          `}
         <div class="max-w-[400px] w-full p-4">
           <player-progress .strokeWidth=${4}
                            .progress=${this.getProgress} />
         </div>
         <button @click="${this.handleTogglePlayClick}" class="text-white mt-6 w-8 h-8 cursor-pointer hover:scale-110 transition-transform">
-          ${this.isPlaying ? html`
+          ${this.playback.isPlaying ? html`
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-pause"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
           ` : html`
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-play"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>

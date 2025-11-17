@@ -11,9 +11,6 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.1.8
         version: 4.1.8(vite@6.3.5(jiti@2.4.2)(lightningcss@1.30.1))
-      '@wasm-audio-decoders/ogg-vorbis':
-        specifier: ^0.1.20
-        version: 0.1.20
       lit:
         specifier: ^3.3.0
         version: 3.3.0
@@ -416,9 +413,6 @@ packages:
 
   '@wasm-audio-decoders/common@9.0.7':
     resolution: {integrity: sha512-WRaUuWSKV7pkttBygml/a6dIEpatq2nnZGFIoPTc5yPLkxL6Wk4YaslPM98OPQvWacvNZ+Py9xROGDtrFBDzag==}
-
-  '@wasm-audio-decoders/ogg-vorbis@0.1.20':
-    resolution: {integrity: sha512-zaQPasU5usRjUDXtXOHYED5tfkR4QMXd+EH3Nrz1+4+M5pCsdD+s9YxJqb0oqnTyRu/KUujOmu5Z/m/NT47vwg==}
 
   '@wasm-audio-decoders/opus-ml@0.0.2':
     resolution: {integrity: sha512-58rWEqDGg+CKCyEeKm2KoxxSwTWtHh/NLTW9ObR4K8CGF6VwuuGudEI1CtniS/oSRmL1nJq/eh8MKARiluw4DQ==}
@@ -900,11 +894,6 @@ snapshots:
     dependencies:
       '@eshaz/web-worker': 1.2.2
       simple-yenc: 1.0.4
-
-  '@wasm-audio-decoders/ogg-vorbis@0.1.20':
-    dependencies:
-      '@wasm-audio-decoders/common': 9.0.7
-      codec-parser: 2.5.0
 
   '@wasm-audio-decoders/opus-ml@0.0.2':
     dependencies:

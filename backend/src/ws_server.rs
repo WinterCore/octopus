@@ -48,18 +48,22 @@ async fn accept_connection(
                 if text.into_text().unwrap() == "metadata" {
                     let metadata = read_ctx.player.get_metadata().await;
 
+                    let (start_time_ms, current_time_ms) = read_ctx.player.get_current_file_start_time_ms().await;
+
                     let json = format!(
                         r#"{{
-                            "name": "{}",
+                            "title": "{}",
                             "author": "{}",
-                            "active_file_start_time_ms": {},
                             "active_file_duration_ms": {},
+                            "active_file_start_time_ms": {},
+                            "active_file_current_time_ms": {},
                             "image": {}
                         }}"#,
-                        metadata.name,
+                        metadata.title,
                         metadata.author,
-                        read_ctx.player.get_current_file_start_time_ms().await,
                         metadata.duration_ms,
+                        start_time_ms,
+                        current_time_ms,
                         if let Some(url) = metadata.image { format!("\"{}\"", url) } else { "null".to_string() },
                     );
 

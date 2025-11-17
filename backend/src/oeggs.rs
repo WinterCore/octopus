@@ -1,4 +1,35 @@
 use std::str;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
+
+#[derive(Debug, Clone, Default)]
+pub struct OpusComments {
+    pub vendor: String,
+    pub comments: HashMap<String, String>,
+}
+
+impl OpusComments {
+    pub fn title(&self) -> Option<&str> {
+        self.comments.get("TITLE").map(|s| s.as_str())
+    }
+
+    pub fn artist(&self) -> Option<&str> {
+        self.comments.get("ARTIST").map(|s| s.as_str())
+    }
+
+    pub fn album(&self) -> Option<&str> {
+        self.comments.get("ALBUM").map(|s| s.as_str())
+    }
+
+    pub fn date(&self) -> Option<&str> {
+        self.comments.get("DATE").map(|s| s.as_str())
+    }
+
+    pub fn genre(&self) -> Option<&str> {
+        self.comments.get("GENRE").map(|s| s.as_str())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct OggSegment {
@@ -118,4 +149,91 @@ impl Iterator for OggParser<'_> {
             segments,
         })
     }
+}
+
+fn parse_opus_comment_header(data: &[u8]) -> Result<OpusComments, String> {
+    let mut pos = 0;
+
+    // Skip "OpusTags" magic signature (8 bytes)
+    if data.len() < 8 || &data[0..8] != b"OpusTags" {
+        return Err("Invalid Opus comment header".to_string());
+    }
+    pos += 8;
+
+    // Read vendor string length (4 bytes, little-endian)
+    if data.len() < pos + 4 {
+        return Err("Invalid vendor string length".to_string());
+    }
+    let vendor_length = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+
+    // Read vendor string
+    if data.len() < pos + vendor_length {
+        return Err("Invalid vendor string".to_string());
+    }
+    let vendor = String::from_utf8_lossy(&data[pos..pos + vendor_length]).to_string();
+    pos += vendor_length;
+
+    // Read user comment list length (4 bytes, little-endian)
+    if data.len() < pos + 4 {
+        return Err("Invalid comment list length".to_string());
+    }
+    let comment_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+    pos += 4;
+
+    let mut comments = HashMap::new();
+
+    // Read each comment
+    for _ in 0..comment_count {
+        if data.len() < pos + 4 {
+            return Err("Invalid comment length".to_string());
+        }
+        let comment_length = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+
+        if data.len() < pos + comment_length {
+            return Err("Invalid comment data".to_string());
+        }
+        let comment_str = String::from_utf8_lossy(&data[pos..pos + comment_length]).to_string();
+        pos += comment_length;
+
+        // Parse "KEY=VALUE" format
+        if let Some(equals_pos) = comment_str.find('=') {
+            let key = comment_str[..equals_pos].to_uppercase();
+            let value = comment_str[equals_pos + 1..].to_string();
+            comments.insert(key, value);
+        }
+    }
+
+    Ok(OpusComments { vendor, comments })
+}
+
+pub fn get_opus_comments(file: &mut File) -> Result<OpusComments, String> {
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).map_err(|e| format!("Failed to read file: {}", e))?;
+
+    let mut parser = OggParser::new(&buffer);
+
+    // Skip the first page (Opus ID header)
+    parser.next().ok_or("No Ogg pages found")?;
+
+    // Read the comment header, which may span multiple pages
+    let mut comment_data = Vec::new();
+    let mut packet_complete = false;
+
+    while !packet_complete {
+        let page = parser.next().ok_or("Incomplete comment header")?;
+
+        for segment in &page.segments {
+            comment_data.extend_from_slice(&segment.data);
+
+            // If segment size is less than 255, the packet is complete
+            if segment.size < 255 {
+                packet_complete = true;
+                break;
+            }
+        }
+    }
+
+    parse_opus_comment_header(&comment_data)
 }

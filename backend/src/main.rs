@@ -4,8 +4,8 @@ mod oeggs;
 mod http_server;
 mod ws_server;
 
-use std::{env::{self, join_paths}, path::Path, sync::Arc};
-use tokio::{fs, io::{self, AsyncBufRead, AsyncBufReadExt, BufReader}};
+use std::{env::{self}, path::Path, sync::Arc};
+use tokio::{fs, io::{self, AsyncBufReadExt, BufReader}};
 
 use opus_player::OpusPlayer;
 
@@ -45,11 +45,20 @@ async fn main() -> io::Result<()> {
 
     let player_handle = tokio::spawn(async move {
         loop {
-            println!("Loop iteration");
             let mut input = String::new();
             let mut reader = BufReader::new(io::stdin());
-            reader.read_line(&mut input).await.expect("Should read input");
-            play_playlist(player.clone(), input.trim().to_string()).await;
+            match reader.read_line(&mut input).await {
+                Ok(n) => n,
+                Err(e) => {
+                    println!("Error reading stdin: {}", e);
+                    break;
+                }
+            };
+
+            match play_playlist(player.clone(), input.trim().to_string()).await {
+                Ok(_) => println!("Started playing playlist: {}", input.trim()),
+                Err(e) => println!("Error starting playlist {}: {}", input.trim(), e),
+            };
         }
     });
 
@@ -62,10 +71,10 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-async fn play_playlist(player: Arc<OpusPlayer>, path: String) {
+async fn play_playlist(player: Arc<OpusPlayer>, path: String) -> Result<(), String> {
     let playern = player.clone();
 
-    let files = get_playlist_files(&path).await;
+    let files = get_playlist_files(&path).await?;
     
     let count = files.len();
     let mut i = 0;
@@ -77,22 +86,26 @@ async fn play_playlist(player: Arc<OpusPlayer>, path: String) {
         loop {
             let file = &files[i % count];
 
-            println!("Playing {}", file);
-            playlist_player.play_file(file).await.expect("Should play file");
+            match playlist_player.play_file(file).await {
+                Ok(_) => println!("Finished playing file: {}", file),
+                Err(e) => println!("Error playing file {}: {}", file, e),
+            };
 
             i += 1;
         }
     });
+
+    Ok(())
 }
 
-async fn get_playlist_files(path: &str) -> Vec<String> {
-    let mut dir = fs::read_dir(path).await.expect("Playlist folder should be accessible");
+async fn get_playlist_files(path: &str) -> Result<Vec<String>, String> {
+    let mut dir = fs::read_dir(path).await.map_err(|x| x.to_string())?;
     let mut file_names = Vec::new();
-    println!("Getting playlist files");
 
-    while let Some(entry) = dir.next_entry().await.expect("Should get next file") {
-        let metadata = entry.metadata().await.expect("Should get file metadata");
-        if metadata.is_file() {
+    println!("Loading playlist folder: {}", path);
+    while let Some(entry) = dir.next_entry().await.map_err(|x| x.to_string())? {
+        let metadata = entry.metadata().await.map_err(|x| x.to_string())?;
+        if metadata.is_file() && entry.path().extension().and_then(|s| s.to_str()) == Some("opus") {
             if let Some(name) = entry.file_name().to_str() {
                 let full_path = Path::new(&path).join(name);
                 file_names.push(full_path.to_string_lossy().to_string());
@@ -100,7 +113,11 @@ async fn get_playlist_files(path: &str) -> Vec<String> {
         }
     }
 
+    if file_names.is_empty() {
+        return Err("No .ogg files found in the specified directory".to_string());
+    }
+
     file_names.sort_by(|a, b| a.cmp(b));
 
-    file_names
+    Ok(file_names)
 }

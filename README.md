@@ -8,6 +8,7 @@
 - [ ] Add proper playlist management TUI
 - [ ] Add file metadata reading (title, artist)
 - [ ] Add playlist image support
+- [ ] Add cli commands for playback control (next, previous, pause, resume)
 
 #### Frontend:
 - [ ] Display current track title and artist
