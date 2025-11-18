@@ -4,11 +4,11 @@ use futures_util::{future, SinkExt, StreamExt, TryStreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::{stream, Message, Utf8Bytes};
 
-use crate::opus_player::OpusPlayer;
+use crate::opus_player::{OpusPlayer, OpusPlayerHandle, TimeData};
 
 
 pub struct WSServerContext {
-    pub player: Arc<OpusPlayer>,
+    pub player: OpusPlayerHandle,
 }
 
 pub async fn init_ws_server(
@@ -46,9 +46,9 @@ async fn accept_connection(
         while let Some(msg_result) = read.next().await {
             if let Ok(text) = msg_result {
                 if text.into_text().unwrap() == "metadata" {
-                    let metadata = read_ctx.player.get_metadata().await;
+                    let metadata = read_ctx.player.get_metadata().await.expect("Should get file metadata");
 
-                    let (start_time_ms, current_time_ms) = read_ctx.player.get_current_file_start_time_ms().await;
+                    let TimeData { start_time_ms, current_time_ms } = read_ctx.player.get_time_data().await.expect("Should get time data");
 
                     let json = format!(
                         r#"{{

@@ -7,9 +7,7 @@ mod ws_server;
 use std::{env::{self}, path::Path, sync::Arc};
 use tokio::{fs, io::{self, AsyncBufReadExt, BufReader}};
 
-use opus_player::OpusPlayer;
-
-use crate::{http_server::{init_http_server, HTTPServerContext}, ws_server::{init_ws_server, WSServerContext}};
+use crate::{http_server::{HTTPServerContext, init_http_server}, opus_player::OpusPlayerHandle, ws_server::{WSServerContext, init_ws_server}};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -20,7 +18,7 @@ async fn main() -> io::Result<()> {
         .expect("Should specify a WS_PORT env variable").parse()
         .expect("PORT should be a number");
 
-    let ogg_player = Arc::from(OpusPlayer::new());
+    let ogg_player = OpusPlayerHandle::new();
 
     let http_server_player = ogg_player.clone();
     let http_server_handle = tokio::spawn(async move {
@@ -41,10 +39,10 @@ async fn main() -> io::Result<()> {
     });
 
 
-    let player = ogg_player.clone();
-
-    let player_handle = tokio::spawn(async move {
+    let cli_player = ogg_player.clone();
+    let cli_handle = tokio::spawn(async move {
         loop {
+            let playern = cli_player.clone();
             let mut input = String::new();
             let mut reader = BufReader::new(io::stdin());
             match reader.read_line(&mut input).await {
@@ -55,7 +53,7 @@ async fn main() -> io::Result<()> {
                 }
             };
 
-            match play_playlist(player.clone(), input.trim().to_string()).await {
+            match play_playlist(playern, input.trim().to_string()).await {
                 Ok(_) => println!("Started playing playlist: {}", input.trim()),
                 Err(e) => println!("Error starting playlist {}: {}", input.trim(), e),
             };
@@ -65,15 +63,13 @@ async fn main() -> io::Result<()> {
     let _ = tokio::join!(
         http_server_handle,
         ws_server_handle,
-        player_handle,
+        cli_handle,
     );
 
     Ok(())
 }
 
-async fn play_playlist(player: Arc<OpusPlayer>, path: String) -> Result<(), String> {
-    let playern = player.clone();
-
+async fn play_playlist(player: OpusPlayerHandle, path: String) -> Result<(), String> {
     let files = get_playlist_files(&path).await?;
     
     let count = files.len();
@@ -81,12 +77,10 @@ async fn play_playlist(player: Arc<OpusPlayer>, path: String) -> Result<(), Stri
 
     println!("Spawning player");
     tokio::spawn(async move {
-        let playlist_player = playern.clone();
-
         loop {
             let file = &files[i % count];
 
-            match playlist_player.play_file(file).await {
+            match player.play_file(file.clone()).await {
                 Ok(_) => println!("Finished playing file: {}", file),
                 Err(e) => println!("Error playing file {}: {}", file, e),
             };

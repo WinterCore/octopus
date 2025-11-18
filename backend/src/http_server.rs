@@ -6,10 +6,10 @@ use ogg::{PacketWriteEndInfo, PacketWriter};
 use tokio::{net::TcpListener, sync::mpsc};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
-use crate::opus_player::{OpusPlayer, OpusPlayerEvent, OPUS_COMMENTS, OPUS_HEAD};
+use crate::opus_player::{OPUS_COMMENTS, OPUS_HEAD, OpusPlayer, OpusPlayerEvent, OpusPlayerHandle};
 
 pub struct HTTPServerContext {
-    pub player: Arc<OpusPlayer>,
+    pub player: OpusPlayerHandle,
 }
 
 pub async fn init_http_server(
@@ -24,7 +24,7 @@ pub async fn init_http_server(
 
     println!("Server is up and running on port {}", port);
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, socket) = listener.accept().await?;
 
         let io = TokioIo::new(stream);
 
@@ -32,6 +32,7 @@ pub async fn init_http_server(
 
         let service = service_fn(move |req| {
             let cloned_ctx = cloned_ctx.clone();
+            println!("Client connected: {}", socket.ip());
             main_handler(cloned_ctx, req) 
         });
 
@@ -105,8 +106,6 @@ async fn main_handler(
             return Ok(response);
         },
         (&Method::GET, "/") => {
-
-            println!("Connected {:?} {:?}", req.uri().path(), req.headers());
             let (tx, rx) = mpsc::channel(500);
 
             let mut ogg_stream = OggStream::new();
@@ -131,8 +130,7 @@ async fn main_handler(
                     .await
                     .expect("Should send opus comments");
 
-                let headstart_events = ctx.player.get_headstart_data().await;
-                println!("got headstart bullshit {}", headstart_events.len());
+                let headstart_events = ctx.player.get_headstart_data().await.expect("Should get headstart data");
 
                 // It's important to send after registering the listener, otherwise
                 // the buffer would fill up and get stuck since there's no consumer
@@ -141,7 +139,7 @@ async fn main_handler(
                 }
 
                 // Start listening for player data
-                ctx.player.add_listener(tx).await;
+                ctx.player.register_listener(tx).await.expect("Should register listener");
             });
 
             let stream_body = StreamBody::new(stream);
