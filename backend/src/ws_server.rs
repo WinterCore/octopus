@@ -4,7 +4,7 @@ use futures_util::{future, SinkExt, StreamExt, TryStreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::{stream, Message, Utf8Bytes};
 
-use crate::opus_player::{OpusPlayer, OpusPlayerHandle, TimeData};
+use crate::opus_player::{BUFFER_SIZE_MS, OpusPlayer, OpusPlayerHandle, TimeData};
 
 
 pub struct WSServerContext {
@@ -15,7 +15,7 @@ pub async fn init_ws_server(
     port: u16,
     ctx: WSServerContext,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
 
@@ -38,7 +38,6 @@ async fn accept_connection(
         .await
         .expect("Error during the websocket handshake occurred");
 
-
     let (mut write, mut read) = ws_stream.split();
     
     let read_ctx = ctx.clone();
@@ -52,18 +51,22 @@ async fn accept_connection(
 
                     let json = format!(
                         r#"{{
+                            "id": "{}",
                             "title": "{}",
                             "author": "{}",
                             "active_file_duration_ms": {},
                             "active_file_start_time_ms": {},
                             "active_file_current_time_ms": {},
+                            "buffer_size_ms": {},
                             "image": {}
                         }}"#,
+                        metadata.id,
                         metadata.title,
                         metadata.author,
                         metadata.duration_ms,
                         start_time_ms,
                         current_time_ms,
+                        BUFFER_SIZE_MS,
                         if let Some(url) = metadata.image { format!("\"{}\"", url) } else { "null".to_string() },
                     );
 

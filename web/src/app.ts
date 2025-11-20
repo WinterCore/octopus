@@ -1,4 +1,4 @@
-import { html, LitElement } from "lit";
+import { html, LitElement, type PropertyValues } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import "./components/player-progress";
 import { WebSocketManager } from "./lib/ws-manager";
@@ -6,9 +6,11 @@ import type {ITimeProgress} from "./components/player-progress";
 import { PlaybackController } from "./controllers/playback-controller";
 
 interface AudioMetadata {
+  readonly id: string;
   readonly title: string;
   readonly author: string;
   readonly image: string | null;
+  readonly buffer_size_ms: number;
   readonly active_file_duration_ms: number;
   readonly active_file_start_time_ms: number;
   readonly active_file_current_time_ms: number;
@@ -25,12 +27,14 @@ export class Octopus extends LitElement {
 
   @property({ type: Object })
   private metadata: AudioMetadata | null = null;
+  private lastHandledFileId: string | null = null;
+  private newMetadataRequested: boolean = false;
 
   constructor() {
     super();
 
     // Initialize WebSocket manager
-    this.wsManager = new WebSocketManager('ws://localhost:3001');
+    this.wsManager = new WebSocketManager('ws://192.168.1.209:3001');
 
     // Set up WebSocket event handlers
     this.wsManager.onOpen = () => {
@@ -50,11 +54,23 @@ export class Octopus extends LitElement {
     this.wsManager.onMessage = (data) => {
       console.log('WebSocket message received:', data);
       this.metadata = data as AudioMetadata;
-      this.playback.currentTimeMs = this.metadata.active_file_current_time_ms;
-      console.log('debug', this.metadata);
+      this.playback.initialize(this.metadata.active_file_current_time_ms, this.metadata.buffer_size_ms)
+      this.newMetadataRequested = false;
+      this.lastHandledFileId = this.metadata.id;
 
       // Handle incoming messages here
     };
+  }
+
+  protected updated(changedProperties: PropertyValues): void {
+    super.updated(changedProperties);
+
+    // Current track ended
+    if (this.metadata && this.playback.currentTimeMs >= this.metadata.active_file_start_time_ms + this.metadata.active_file_duration_ms && !this.newMetadataRequested && this.metadata.id === this.lastHandledFileId) {
+      // Request metadata for next track
+      this.wsManager.send("metadata");
+      this.newMetadataRequested = true;
+    }
   }
 
   async firstUpdated(): Promise<void> {

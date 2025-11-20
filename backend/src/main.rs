@@ -4,10 +4,10 @@ mod oeggs;
 mod http_server;
 mod ws_server;
 
-use std::{env::{self}, path::Path, sync::Arc};
-use tokio::{fs, io::{self, AsyncBufReadExt, BufReader}};
+use std::{env::{self}, path::Path, sync::Arc, time::Duration};
+use tokio::{fs, io::{self, AsyncBufReadExt, BufReader}, time::sleep};
 
-use crate::{http_server::{HTTPServerContext, init_http_server}, opus_player::OpusPlayerHandle, ws_server::{WSServerContext, init_ws_server}};
+use crate::{http_server::{HTTPServerContext, init_http_server}, opus_player::{OpusPlayerHandle, PlaybackResult, PlaybackState}, ws_server::{WSServerContext, init_ws_server}};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -60,10 +60,27 @@ async fn main() -> io::Result<()> {
         }
     });
 
+    /*
+    let potato_player = ogg_player.clone();
+    let potato_handle = tokio::spawn(async move {
+        play_playlist(potato_player, "/home/winter/Music/Quran/test".to_string()).await.expect("Should start playing potato playlist");
+    });
+
+    let cucumber_player = ogg_player.clone();
+    let cucumber_handle = tokio::spawn(async move {
+        sleep(Duration::from_secs(2)).await;
+        play_playlist(cucumber_player, "/home/winter/Music/Quran/eslam-sobhy".to_string()).await.expect("Should start playing potato playlist");
+    });
+    */
+
     let _ = tokio::join!(
         http_server_handle,
         ws_server_handle,
         cli_handle,
+        /*
+        potato_handle,
+        cucumber_handle
+        */
     );
 
     Ok(())
@@ -81,7 +98,17 @@ async fn play_playlist(player: OpusPlayerHandle, path: String) -> Result<(), Str
             let file = &files[i % count];
 
             match player.play_file(file.clone()).await {
-                Ok(_) => println!("Finished playing file: {}", file),
+                Ok(result) => {
+                    match result {
+                        PlaybackResult::Finished => println!("Finished playback normally for file: {}", file),
+                        PlaybackResult::Interrupted => {
+                            println!("Playback was interrupted for file: {}", file);
+                            return;
+                        },
+                        PlaybackResult::Error(e) => println!("Error during playback of file {}: {}", file, e),
+                    }
+                    println!("Finished playing file: {}", file)
+                },
                 Err(e) => println!("Error playing file {}: {}", file, e),
             };
 

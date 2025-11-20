@@ -9,7 +9,7 @@ use crate::oeggs::get_opus_comments;
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
 
-const BUFFER_SIZE_MS: usize = 3000; // 5 seconds buffer
+pub const BUFFER_SIZE_MS: usize = 3000; // 5 seconds buffer
 const MAX_HEADSTART_BUFFER_SIZE: usize = ((BUFFER_SIZE_MS as f32 / 1000f32) * SAMPLE_RATE as f32 * CHANNELS as f32) as usize;
 
 pub const OPUS_HEAD: &[u8] = &[
@@ -90,41 +90,46 @@ pub struct ActiveFileMetadata {
 
 pub struct OpusPlayer {
     start_instant: Option<Instant>,
-    buffer_data: Vec<i16>, // pcm data
+    headstart_buffer: Vec<i16>, // pcm data
+    headstart_granule_position: u64, // granule position at the start of headstart_buffer
     listeners: Vec<mpsc::Sender<OpusPlayerEvent>>,
     granule_position: u64,
-    active_file: ActiveFileMetadata,
+    active_file: Option<ActiveFileMetadata>,
 }
 
 impl OpusPlayer {
     pub fn new() -> Self {
         Self {
             start_instant: None,
-            buffer_data: Vec::new(),
+            headstart_buffer: Vec::new(),
+            headstart_granule_position: 0,
             listeners: vec![],
             granule_position: 0,
-            active_file: ActiveFileMetadata {
-                id: 0,
-                start_granule_position: 0,
-                title: "Unknown".to_string(),
-                author: "Unknown Author".to_string(),
-                image: None,
-                duration_ms: 0,
-            },
+            active_file: None,
         }
     }
     
-    pub async fn get_metadata(&self) -> ActiveFileMetadata {
+    pub async fn get_metadata(&self) -> Option<ActiveFileMetadata> {
         return self.active_file.clone();
     }
 
     pub async fn get_stream_time_data(&self) -> TimeData {
-        let start_time_ms = self.active_file.start_granule_position as f64 / 48_000 as f64 * 1000.0;
+        let active_file = match &self.active_file {
+            Some(file) => file,
+            None => {
+                return TimeData {
+                    start_time_ms: 0,
+                    current_time_ms: 0,
+                };
+            }
+        };
+
+        let start_time_ms = active_file.start_granule_position as f64 / 48_000 as f64 * 1000.0;
         let current_time_ms = self.granule_position as f64 / 48_000 as f64 * 1000.0;
 
         return TimeData {
             start_time_ms: start_time_ms as u64,
-            current_time_ms: current_time_ms as u64,
+            current_time_ms: (current_time_ms as u64).checked_sub(BUFFER_SIZE_MS as u64).unwrap_or(0),
         };
     }
 
@@ -169,22 +174,36 @@ impl OpusPlayer {
         let ogg_comments_result = get_opus_comments(&mut file);
         file.seek(std::io::SeekFrom::Start(0)).map_err(|x| x.to_string())?;
 
-        let active_file = &mut self.active_file;
-
-        match ogg_comments_result {
+        let (title, author) = match ogg_comments_result {
             Ok(comments) => {
-                active_file.title = comments.title().unwrap_or("Unknown Title").to_string();
-                active_file.author = comments.artist().unwrap_or("Unknown Author").to_string();
+                (
+                    comments.title().unwrap_or("Unknown Title").to_string(),
+                    comments.artist().unwrap_or("Unknown Author").to_string()
+                )
             },
             Err(e) => {
                 println!("Failed to read Ogg comments: {}", e);
+
+                (
+                    "Unknown Title".to_string(),
+                    "Unknown Author".to_string()
+                )
             }
         };
+        
+        let file_id = match &self.active_file {
+            Some(file) => file.id + 1,
+            None => 1,
+        };
 
-        active_file.id += 1;
-        active_file.start_granule_position = self.granule_position;
-        active_file.duration_ms = duration_ms;
-        let file_id = active_file.id;
+        self.active_file = Some(ActiveFileMetadata {
+            id: file_id,
+            start_granule_position: self.granule_position,
+            title,
+            author,
+            image: None,
+            duration_ms,
+        });
 
         // Calculate file duration
         println!("\tFile duration: {:.2} seconds ({} ms)", duration_ms as f64 / 1000.0, duration_ms);
@@ -212,6 +231,11 @@ impl OpusPlayer {
         &mut self,
         state: &mut PlaybackState,
     ) -> Result<bool, String> {
+        let active_file = match &self.active_file {
+            Some(file) => file,
+            None => return Err("No active file for playback".to_string()),
+        };
+
         // Try to read the next packet
         let packet = match state.packet_reader.read_packet() {
             Ok(Some(packet)) => packet,
@@ -220,7 +244,7 @@ impl OpusPlayer {
         };
 
         // Check if playback was interrupted by a new file
-        if self.active_file.id != state.file_id {
+        if active_file.id != state.file_id {
             return Err("Playback interrupted: File changed!".to_string());
         }
 
@@ -273,15 +297,23 @@ impl OpusPlayer {
         }
 
         // Update buffer with sliding window
-        let buffer_data = &mut self.buffer_data;
+        let buffer_data = &mut self.headstart_buffer;
 
         if buffer_data.len() < MAX_HEADSTART_BUFFER_SIZE {
             // Fill initial buffer
+            if buffer_data.is_empty() {
+                // First frame being added - set headstart position
+                self.headstart_granule_position = self.granule_position - frame_size as u64;
+            }
             buffer_data.extend_from_slice(pcm);
         } else {
             // Sliding window - remove old data, add new data
+            let samples_drained = frame_size; // Number of samples per channel
             buffer_data.drain(0..(frame_size * 2));
             buffer_data.extend_from_slice(pcm);
+
+            // Update headstart position to reflect removed samples
+            self.headstart_granule_position += samples_drained as u64;
 
             // Sleep to maintain real-time playback speed
             if let Some(instant) = self.start_instant {
@@ -321,7 +353,7 @@ impl OpusPlayer {
             .map_err(|x| x.to_string())
             .expect("Should create opus encoder");
 
-        if self.buffer_data.is_empty() {
+        if self.headstart_buffer.is_empty() {
             return Vec::new();
         }
 
@@ -331,12 +363,12 @@ impl OpusPlayer {
             let samples: usize = frame_size;
 
             let encoded_len = opus_encoder
-                .encode(&self.buffer_data[(i * samples)..(i * samples + samples)], &mut temp_buffer)
+                .encode(&self.headstart_buffer[(i * samples)..(i * samples + samples)], &mut temp_buffer)
                 .expect("Should encode headstart pcm data");
 
             let event = OpusPlayerEvent::AudioData {
                 raw_opus_data: temp_buffer[..encoded_len].to_vec(),
-                granule_position: (i as u64 * samples as u64) / 2,
+                granule_position: self.granule_position + (i as u64 * samples as u64) / 2,
             };
 
             events.push(event);
@@ -351,11 +383,17 @@ impl OpusPlayer {
 }
 
 enum OpusPlayerCommand {
-    PlayFile(oneshot::Sender<()>, String),
-    GetMetadata(oneshot::Sender<ActiveFileMetadata>),
+    PlayFile(oneshot::Sender<PlaybackResult>, String),
+    GetMetadata(oneshot::Sender<Option<ActiveFileMetadata>>),
     GetHeadstartData(oneshot::Sender<Vec<OpusPlayerEvent>>),
     GetTimeData(oneshot::Sender<TimeData>),
     RegisterListener(mpsc::Sender<OpusPlayerEvent>),
+}
+
+pub enum PlaybackResult {
+    Finished,
+    Interrupted,
+    Error(String),
 }
 
 struct OpusPlayerActor {
@@ -372,7 +410,7 @@ impl OpusPlayerActor {
     }
 
     pub async fn run(mut self) {
-        let mut playback_state: Option<(PlaybackState, oneshot::Sender<()>)> = None;
+        let mut playback_state: Option<(PlaybackState, oneshot::Sender<PlaybackResult>)> = None;
 
         loop {
             tokio::select! {
@@ -382,7 +420,7 @@ impl OpusPlayerActor {
                         OpusPlayerCommand::PlayFile(sender, path) => {
                             // If already playing, notify the old sender that playback was interrupted
                             if let Some((_, old_sender)) = playback_state.take() {
-                                let _ = old_sender.send(());
+                                let _ = old_sender.send(PlaybackResult::Interrupted);
                             }
 
                             // Start new playback
@@ -392,7 +430,7 @@ impl OpusPlayerActor {
                                 },
                                 Err(e) => {
                                     println!("Error starting playback: {}", e);
-                                    let _ = sender.send(());
+                                    let _ = sender.send(PlaybackResult::Error(e));
                                 }
                             }
                         },
@@ -437,18 +475,19 @@ impl OpusPlayerActor {
                         Some(Ok(false)) => {
                             // Playback finished successfully
                             if let Some((_, sender)) = playback_state.take() {
-                                let _ = sender.send(());
+                                let _ = sender.send(PlaybackResult::Finished);
                             }
                         },
                         Some(Err(e)) => {
                             // Error during playback
                             println!("Playback error: {}", e);
                             if let Some((_, sender)) = playback_state.take() {
-                                let _ = sender.send(());
+                                let _ = sender.send(PlaybackResult::Error(e.to_string()));
                             }
                         },
                         None => {
-                            // Should not happen due to the if condition
+                            // Playback was interrupted
+
                         }
                     }
                 }
@@ -475,19 +514,19 @@ impl OpusPlayerHandle {
         Self { sender }
     }
 
-    pub async fn play_file(&self, path: String) -> Result<(), String> {
+    pub async fn play_file(&self, path: String) -> Result<PlaybackResult, String> {
         let (sender, receiver) = oneshot::channel();
 
         let command = OpusPlayerCommand::PlayFile(sender, path);
 
         self.sender.send(command).await.map_err(|x| x.to_string())?;
 
-        receiver.await.map_err(|x| x.to_string())?;
+        let result = receiver.await.map_err(|x| x.to_string())?;
 
-        Ok(())
+        Ok(result)
     }
 
-    pub async fn get_metadata(&self) -> Result<ActiveFileMetadata, String> {
+    pub async fn get_metadata(&self) -> Result<Option<ActiveFileMetadata>, String> {
         let (sender, receiver) = oneshot::channel();
 
         let command = OpusPlayerCommand::GetMetadata(sender);

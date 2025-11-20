@@ -16,7 +16,7 @@ pub async fn init_http_server(
     port: u16,
     ctx: HTTPServerContext,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let listener = TcpListener::bind(addr).await?;
     

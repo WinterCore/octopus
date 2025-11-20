@@ -16,6 +16,27 @@ class OggOpusParser {
 
     return granulePosition;
   }
+
+  isHeaderPacket(buffer: ArrayBuffer): boolean {
+    const view = new DataView(buffer);
+
+    // Check for "OggS" magic number
+    if (view.getUint32(0, false) !== 0x4f676753) return false;
+
+    // Get number of page segments (byte 26)
+    const numSegments = view.getUint8(26);
+
+    // Calculate payload offset (27 + segment table size)
+    const payloadOffset = 27 + numSegments;
+
+    if (buffer.byteLength < payloadOffset + 8) return false;
+
+    // Check for OpusHead or OpusTags magic signatures
+    const bytes = new Uint8Array(buffer, payloadOffset, 8);
+    const signature = String.fromCharCode(...bytes);
+
+    return signature === 'OpusHead' || signature === 'OpusTags';
+  }
 }
 
 export class PlaybackController implements ReactiveController {
@@ -24,9 +45,9 @@ export class PlaybackController implements ReactiveController {
   private scheduledUntil: number = 0;
   private abortController: AbortController | null = null;
   private currentDecoder: OggOpusDecoderWebWorker | null = null;
-  private readonly BUFFER_LOOKAHEAD = 0.1; // 100ms buffer lookahead
   private timeAdvanceInterval: number | null = null;
   private readonly TIME_ADVANCE_INTERVAL_MS = 100; // Update time every 100ms
+  private bufferSizeMs: number = 0;
 
   public isPlaying: boolean = false;
   public currentTimeMs: number = 0;
@@ -61,6 +82,16 @@ export class PlaybackController implements ReactiveController {
     }, this.TIME_ADVANCE_INTERVAL_MS) as unknown as number;
   }
 
+  public initialize(currentTimeMs: number, bufferSizeMs: number): void {
+    this.currentTimeMs = currentTimeMs;
+    this.bufferSizeMs = bufferSizeMs;
+    this.host.requestUpdate();
+
+    if (!this.isPlaying) {
+      this.startTimeAdvanceInterval();
+    }
+  }
+
   async start(): Promise<void> {
     // Stop any existing stream
     this.stop();
@@ -73,8 +104,7 @@ export class PlaybackController implements ReactiveController {
 
     // Create new audio context
     this.audioContext = new AudioContext();
-    // Initialize with a small lookahead to build up buffer
-    this.scheduledUntil = this.audioContext.currentTime + this.BUFFER_LOOKAHEAD;
+    this.scheduledUntil = this.audioContext.currentTime;
 
     // Create new abort controller
     this.abortController = new AbortController();
@@ -89,7 +119,7 @@ export class PlaybackController implements ReactiveController {
       console.log('Decoder ready, starting stream...');
 
       // Fetch and decode stream
-      const response = await fetch('http://localhost:3000', {
+      const response = await fetch('http://192.168.1.209:3000', {
         signal: this.abortController.signal
       });
       const reader = response.body!.getReader();
@@ -108,10 +138,14 @@ export class PlaybackController implements ReactiveController {
 
         // Decode the chunk
         const result = await decoder.decode(value!);
+        
 
         // Calculate current time from granule position
-        if (granulePosition !== null && result.sampleRate) {
-          this.currentTimeMs = granulePosition / result.sampleRate * 1000;
+        // Skip header packets (OpusHead and OpusTags)
+        if (!parser.isHeaderPacket(value!.buffer) && granulePosition !== null && result.sampleRate) {
+          const bufferSizeMs = Math.max((this.scheduledUntil - this.audioContext.currentTime) * 1000, this.bufferSizeMs);
+
+          this.currentTimeMs = granulePosition / result.sampleRate * 1000 - bufferSizeMs;
           this.host.requestUpdate();
         }
 
@@ -205,10 +239,10 @@ export class PlaybackController implements ReactiveController {
     const now = this.audioContext.currentTime;
 
     // If we've fallen behind, reset to current time + lookahead
-    if (this.scheduledUntil < now + this.BUFFER_LOOKAHEAD) {
-      this.scheduledUntil = now + this.BUFFER_LOOKAHEAD;
+    if (this.scheduledUntil < now) {
+      this.scheduledUntil = now;
     }
-
+    
     source.start(this.scheduledUntil);
     this.scheduledUntil += audioBuffer.duration;
   }
