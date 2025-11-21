@@ -1,9 +1,12 @@
 @import "tailwindcss";
 
 html, body {
-  min-height: 100vh;
+  min-height: 100vh; /* Fallback */
+  min-height: 100dvh; /* Modern browsers */
   display: flex;
   flex-direction: column;
+  background: linear-gradient(to bottom, #51756d, #253330);
+  background-color: #253330;
 }
 
 octopus-app {

@@ -1,12 +1,12 @@
-use std::{convert::Infallible, io::{Cursor, Read, Seek, SeekFrom}, net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, io::{Cursor, Read, Seek, SeekFrom}, net::SocketAddr, path::Path, sync::Arc};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use hyper::{body::{self, Bytes, Frame}, header::{self, HeaderValue}, server::conn::http1, service::service_fn, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use ogg::{PacketWriteEndInfo, PacketWriter};
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{fs, net::TcpListener, sync::mpsc};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
-use crate::opus_player::{OPUS_COMMENTS, OPUS_HEAD, OpusPlayer, OpusPlayerEvent, OpusPlayerHandle};
+use crate::opus_player::{OPUS_COMMENTS, OPUS_HEAD, OpusPlayerEvent, OpusPlayerHandle};
 
 pub struct HTTPServerContext {
     pub player: OpusPlayerHandle,
@@ -85,7 +85,60 @@ async fn main_handler(
     req: Request<body::Incoming>
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Infallible> {
     match (req.method(), req.uri().path()) {
-        (&Method::OPTIONS, "/") => {
+        (&Method::GET, "/playlist-image") | (&Method::HEAD, "/playlist-image") => {
+            // Get the current playlist path
+            let playlist_path = match ctx.player.get_playlist_path().await {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    let mut response = Response::new(empty());
+                    *response.status_mut() = StatusCode::NOT_FOUND;
+                    response.headers_mut().insert(
+                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        HeaderValue::from_static("*")
+                    );
+                    return Ok(response);
+                },
+                Err(e) => {
+                    eprintln!("Error getting playlist path: {}", e);
+                    let mut response = Response::new(empty());
+                    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                    response.headers_mut().insert(
+                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        HeaderValue::from_static("*")
+                    );
+                    return Ok(response);
+                }
+            };
+
+            // Construct path to playlist.jpg
+            let image_path = Path::new(&playlist_path).join("playlist.jpg");
+
+            // Try to read the file
+            match fs::read(&image_path).await {
+                Ok(image_data) => {
+                    let response = Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "image/jpeg")
+                        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                        .header(header::CACHE_CONTROL, "public, max-age=3600")
+                        .body(full(image_data))
+                        .expect("Should build response");
+
+                    Ok(response)
+                },
+                Err(e) => {
+                    eprintln!("Error reading playlist image at {:?}: {}", image_path, e);
+                    let mut response = Response::new(empty());
+                    *response.status_mut() = StatusCode::NOT_FOUND;
+                    response.headers_mut().insert(
+                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        HeaderValue::from_static("*")
+                    );
+                    Ok(response)
+                }
+            }
+        },
+        (&Method::OPTIONS, _) => {
             // This is a preflight request. We must respond with the correct CORS headers.
             let mut response = Response::new(empty());
             *response.status_mut() = StatusCode::NO_CONTENT; // 204
@@ -102,7 +155,7 @@ async fn main_handler(
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
                 HeaderValue::from_static("Content-Type, Authorization")
             );
-            
+
             return Ok(response);
         },
         (&Method::GET, "/") => {

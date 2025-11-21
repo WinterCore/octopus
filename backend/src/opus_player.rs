@@ -1,4 +1,4 @@
-use std::{fs::File, io::{BufReader, Seek}, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::{fs::File, io::{BufReader, Seek}, path::Path, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use ogg::{reading::PacketReader};
 use opus::{Application, Channels, Decoder as OpusDecoder, Encoder as OpusEncoder};
 
@@ -95,6 +95,7 @@ pub struct OpusPlayer {
     listeners: Vec<mpsc::Sender<OpusPlayerEvent>>,
     granule_position: u64,
     active_file: Option<ActiveFileMetadata>,
+    current_playlist_path: Option<String>,
 }
 
 impl OpusPlayer {
@@ -106,11 +107,16 @@ impl OpusPlayer {
             listeners: vec![],
             granule_position: 0,
             active_file: None,
+            current_playlist_path: None,
         }
     }
     
     pub async fn get_metadata(&self) -> Option<ActiveFileMetadata> {
         return self.active_file.clone();
+    }
+
+    pub async fn get_playlist_path(&self) -> Option<String> {
+        return self.current_playlist_path.clone();
     }
 
     pub async fn get_stream_time_data(&self) -> TimeData {
@@ -160,6 +166,11 @@ impl OpusPlayer {
 
         println!("Playing file {}", path);
 
+        // Extract and store playlist path (directory containing the file)
+        if let Some(parent) = Path::new(path).parent() {
+            self.current_playlist_path = Some(parent.to_string_lossy().to_string());
+        }
+
         if let None = self.start_instant {
             self.start_instant = Some(Instant::now());
         }
@@ -201,7 +212,7 @@ impl OpusPlayer {
             start_granule_position: self.granule_position,
             title,
             author,
-            image: None,
+            image: Some("/playlist-image".to_string()),
             duration_ms,
         });
 
@@ -388,6 +399,7 @@ enum OpusPlayerCommand {
     GetHeadstartData(oneshot::Sender<Vec<OpusPlayerEvent>>),
     GetTimeData(oneshot::Sender<TimeData>),
     RegisterListener(mpsc::Sender<OpusPlayerEvent>),
+    GetPlaylistPath(oneshot::Sender<Option<String>>),
 }
 
 pub enum PlaybackResult {
@@ -456,6 +468,13 @@ impl OpusPlayerActor {
 
                             if let Err(e) = sender.send(time_data) {
                                 println!("Error sending time data: {:?}", e);
+                            }
+                        },
+                        OpusPlayerCommand::GetPlaylistPath(sender) => {
+                            let playlist_path = self.player.get_playlist_path().await;
+
+                            if let Err(e) = sender.send(playlist_path) {
+                                println!("Error sending playlist path: {:?}", e);
                             }
                         },
                     }
@@ -568,6 +587,18 @@ impl OpusPlayerHandle {
         let time_data = receiver.await.map_err(|x| x.to_string())?;
 
         Ok(time_data)
+    }
+
+    pub async fn get_playlist_path(&self) -> Result<Option<String>, String> {
+        let (sender, receiver) = oneshot::channel();
+
+        let command = OpusPlayerCommand::GetPlaylistPath(sender);
+
+        self.sender.send(command).await.map_err(|x| x.to_string())?;
+
+        let playlist_path = receiver.await.map_err(|x| x.to_string())?;
+
+        Ok(playlist_path)
     }
 }
 

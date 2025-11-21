@@ -1,5 +1,5 @@
 import {html, LitElement, svg} from "lit";
-import {customElement, property} from "lit/decorators.js";
+import {customElement, property, state} from "lit/decorators.js";
 import {secondsToHumanReadable} from "../utils/time";
 import {getArc} from "../utils/svg";
 import {clamp} from "../utils/math";
@@ -7,12 +7,6 @@ import {clamp} from "../utils/math";
 export interface ITimeProgress {
   readonly current: number;
   readonly total: number;
-}
-
-export interface IAudioMetadata {
-  readonly name: string;
-  readonly image: string | undefined;
-  readonly author: string | undefined;
 }
 
 @customElement("player-progress")
@@ -27,11 +21,39 @@ export class PlayerProgress extends LitElement {
   @property({ type: Object })
   progress!: ITimeProgress | null;
 
-  @property({ type: Object })
-  metadata?: IAudioMetadata;
+  @property({ type: String })
+  image: string = "/logo.webp";
 
   @property({ type: Number })
   strokeWidth: number = 4;
+
+  @state()
+  private resolvedImageUrl: string = "/logo.webp";
+
+  private async resolveImageUrl(imageUrl: string) {
+    if (!imageUrl || imageUrl === "/logo.webp") {
+      this.resolvedImageUrl = "/logo.webp";
+      return;
+    }
+
+    try {
+      const response = await fetch(imageUrl, { method: "HEAD" });
+      if (response.ok) {
+        this.resolvedImageUrl = imageUrl;
+      } else {
+        this.resolvedImageUrl = "/logo.webp";
+      }
+    } catch (error) {
+      console.error("Failed to load playlist image:", error);
+      this.resolvedImageUrl = "/logo.webp";
+    }
+  }
+
+  updated(changedProperties: Map<string, any>) {
+    if (changedProperties.has("image")) {
+      this.resolveImageUrl(this.image);
+    }
+  }
 
   render() {
     const startAngle = 0;
@@ -109,7 +131,7 @@ export class PlayerProgress extends LitElement {
                        y=${iy}
                        width=${iw}
                        height=${ih}>
-          <img alt="poster" draggable="false" class="select-none rounded-full h-full w-full object-cover" src="${this.metadata?.image ?? "/logo.webp"}" />
+          <img alt="poster" draggable="false" class="select-none rounded-full h-full w-full object-cover" src="${this.resolvedImageUrl}" />
         </foreignObject>
 
         ${svg`

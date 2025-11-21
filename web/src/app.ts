@@ -30,11 +30,14 @@ export class Octopus extends LitElement {
   private lastHandledFileId: string | null = null;
   private newMetadataRequested: boolean = false;
 
+  @property({ type: String })
+  private imageUrl: string = "/logo.webp";
+
   constructor() {
     super();
 
     // Initialize WebSocket manager
-    this.wsManager = new WebSocketManager('ws://192.168.1.209:3001');
+    this.wsManager = new WebSocketManager(import.meta.env.VITE_WS_URL);
 
     // Set up WebSocket event handlers
     this.wsManager.onOpen = () => {
@@ -57,6 +60,15 @@ export class Octopus extends LitElement {
       this.playback.initialize(this.metadata.active_file_current_time_ms, this.metadata.buffer_size_ms)
       this.newMetadataRequested = false;
       this.lastHandledFileId = this.metadata.id;
+
+      // Update image URL with cache-busting query param
+      if (this.metadata.image) {
+        const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
+        const cacheBuster = Math.random().toString(36).substring(7);
+        this.imageUrl = `${apiBaseUrl}${this.metadata.image}?v=${cacheBuster}`;
+      } else {
+        this.imageUrl = "/logo.webp";
+      }
 
       // Handle incoming messages here
     };
@@ -94,14 +106,14 @@ export class Octopus extends LitElement {
     }
 
     return {
-      current: Math.ceil((this.playback.currentTimeMs - this.metadata.active_file_start_time_ms) / 1000),
+      current: Math.max(Math.ceil((this.playback.currentTimeMs - this.metadata.active_file_start_time_ms) / 1000), 0),
       total: Math.ceil(this.metadata.active_file_duration_ms / 1000),
     };
   }
 
   render() {
     return html`
-      <main class="bg-gradient-to-b from-[#51756d] to-[#253330] flex-1 flex flex-col justify-center items-center">
+      <main class="bg-gradient-to-b p-4 from-[#51756d] to-[#253330] flex-1 flex flex-col justify-center items-center">
         ${this.metadata
           ? html`
             <h1 class="text-center text-white text-3xl">
@@ -118,7 +130,8 @@ export class Octopus extends LitElement {
           `}
         <div class="max-w-[400px] w-full p-4">
           <player-progress .strokeWidth=${4}
-                           .progress=${this.getProgress} />
+                           .progress=${this.getProgress}
+                           .image=${this.imageUrl} />
         </div>
         <button @click="${this.handleTogglePlayClick}" class="text-white mt-6 w-8 h-8 cursor-pointer hover:scale-110 transition-transform">
           ${this.playback.isPlaying ? html`

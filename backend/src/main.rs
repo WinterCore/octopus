@@ -4,10 +4,10 @@ mod oeggs;
 mod http_server;
 mod ws_server;
 
-use std::{env::{self}, path::Path, sync::Arc, time::Duration};
-use tokio::{fs, io::{self, AsyncBufReadExt, BufReader}, time::sleep};
+use std::{env::{self}, path::Path};
+use tokio::{fs, io::{self, AsyncBufReadExt, BufReader}};
 
-use crate::{http_server::{HTTPServerContext, init_http_server}, opus_player::{OpusPlayerHandle, PlaybackResult, PlaybackState}, ws_server::{WSServerContext, init_ws_server}};
+use crate::{http_server::{HTTPServerContext, init_http_server}, opus_player::{OpusPlayerHandle, PlaybackResult}, ws_server::{WSServerContext, init_ws_server, get_metadata_json}};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -20,6 +20,9 @@ async fn main() -> io::Result<()> {
 
     let ogg_player = OpusPlayerHandle::new();
 
+    // Create broadcast channel for metadata
+    let (metadata_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+
     let http_server_player = ogg_player.clone();
     let http_server_handle = tokio::spawn(async move {
         let ctx = HTTPServerContext {
@@ -30,9 +33,11 @@ async fn main() -> io::Result<()> {
     });
 
     let ws_server_player = ogg_player.clone();
+    let ws_metadata_tx = metadata_tx.clone();
     let ws_server_handle = tokio::spawn(async move {
         let ctx = WSServerContext {
             player: ws_server_player,
+            metadata_broadcast: ws_metadata_tx,
         };
 
         init_ws_server(ws_port, ctx).await.expect("Should start WS server")
@@ -40,9 +45,11 @@ async fn main() -> io::Result<()> {
 
 
     let cli_player = ogg_player.clone();
+    let cli_metadata_tx = metadata_tx.clone();
     let cli_handle = tokio::spawn(async move {
         loop {
             let playern = cli_player.clone();
+            let metadata_tx = cli_metadata_tx.clone();
             let mut input = String::new();
             let mut reader = BufReader::new(io::stdin());
             match reader.read_line(&mut input).await {
@@ -53,7 +60,7 @@ async fn main() -> io::Result<()> {
                 }
             };
 
-            match play_playlist(playern, input.trim().to_string()).await {
+            match play_playlist(playern, metadata_tx, input.trim().to_string()).await {
                 Ok(_) => println!("Started playing playlist: {}", input.trim()),
                 Err(e) => println!("Error starting playlist {}: {}", input.trim(), e),
             };
@@ -86,9 +93,13 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-async fn play_playlist(player: OpusPlayerHandle, path: String) -> Result<(), String> {
+async fn play_playlist(
+    player: OpusPlayerHandle,
+    metadata_tx: tokio::sync::broadcast::Sender<String>,
+    path: String
+) -> Result<(), String> {
     let files = get_playlist_files(&path).await?;
-    
+
     let count = files.len();
     let mut i = 0;
 
@@ -100,9 +111,22 @@ async fn play_playlist(player: OpusPlayerHandle, path: String) -> Result<(), Str
             match player.play_file(file.clone()).await {
                 Ok(result) => {
                     match result {
-                        PlaybackResult::Finished => println!("Finished playback normally for file: {}", file),
+                        PlaybackResult::Finished => {
+                            println!("Finished playback normally for file: {}", file);
+
+                            // Broadcast metadata for the next file that's about to play
+                            if let Ok(json) = get_metadata_json(&player).await {
+                                let _ = metadata_tx.send(json);
+                            }
+                        },
                         PlaybackResult::Interrupted => {
                             println!("Playback was interrupted for file: {}", file);
+
+                            // Broadcast metadata for the new file that just started
+                            if let Ok(json) = get_metadata_json(&player).await {
+                                let _ = metadata_tx.send(json);
+                            }
+
                             return;
                         },
                         PlaybackResult::Error(e) => println!("Error during playback of file {}: {}", file, e),

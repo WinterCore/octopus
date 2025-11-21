@@ -6,7 +6,7 @@ class OggOpusParser {
     const view = new DataView(buffer);
 
     // Check for "OggS" magic number
-    if (view.getUint32(0, false) !== 0x4f676753) return null;
+    if (view.byteLength === 0 || view.getUint32(0, false) !== 0x4f676753) return null;
 
     // Granule position at bytes 6-13 (64-bit little-endian)
     const granuleLow = view.getUint32(6, true);
@@ -119,7 +119,7 @@ export class PlaybackController implements ReactiveController {
       console.log('Decoder ready, starting stream...');
 
       // Fetch and decode stream
-      const response = await fetch('http://192.168.1.209:3000', {
+      const response = await fetch(import.meta.env.VITE_API_BASE_URL, {
         signal: this.abortController.signal
       });
       const reader = response.body!.getReader();
