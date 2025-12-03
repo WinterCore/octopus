@@ -48,6 +48,9 @@ export class PlaybackController implements ReactiveController {
   private timeAdvanceInterval: number | null = null;
   private readonly TIME_ADVANCE_INTERVAL_MS = 100; // Update time every 100ms
   private bufferSizeMs: number = 0;
+  private retryCount: number = 0;
+  private readonly MAX_RETRIES = 5;
+  private readonly RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000]; // Exponential backoff
 
   public isPlaying: boolean = false;
   public currentTimeMs: number = 0;
@@ -65,6 +68,15 @@ export class PlaybackController implements ReactiveController {
     // Clean up when host is removed
     this.stop();
     this.clearTimeAdvanceInterval();
+    this.cleanup();
+  }
+
+  private cleanup() {
+    // Close audio context only on final cleanup
+    if (this.audioContext) {
+      this.audioContext.close();
+      this.audioContext = null;
+    }
   }
 
   private clearTimeAdvanceInterval() {
@@ -102,10 +114,26 @@ export class PlaybackController implements ReactiveController {
     this.isPlaying = true;
     this.host.requestUpdate();
 
-    // Create new audio context
-    this.audioContext = new AudioContext();
+    // Create audio context only if it doesn't exist (reuse for reconnections)
+    if (!this.audioContext) {
+      this.audioContext = new AudioContext();
+    }
+
+    // Resume the audio context if it's suspended
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
+
     this.scheduledUntil = this.audioContext.currentTime;
 
+    // Reset retry count on new start
+    this.retryCount = 0;
+
+    // Start streaming with retry logic
+    await this.streamWithRetry();
+  }
+
+  private async streamWithRetry(): Promise<void> {
     // Create new abort controller
     this.abortController = new AbortController();
 
@@ -124,6 +152,9 @@ export class PlaybackController implements ReactiveController {
       });
       const reader = response.body!.getReader();
 
+      // Reset retry count on successful connection
+      this.retryCount = 0;
+
       while (true) {
         const {done, value} = await reader.read();
         if (done) break;
@@ -138,12 +169,12 @@ export class PlaybackController implements ReactiveController {
 
         // Decode the chunk
         const result = await decoder.decode(value!);
-        
+
 
         // Calculate current time from granule position
         // Skip header packets (OpusHead and OpusTags)
         if (!parser.isHeaderPacket(value!.buffer) && granulePosition !== null && result.sampleRate) {
-          const bufferSizeMs = Math.max((this.scheduledUntil - this.audioContext.currentTime) * 1000, this.bufferSizeMs);
+          const bufferSizeMs = Math.max((this.scheduledUntil - this.audioContext!.currentTime) * 1000, this.bufferSizeMs);
 
           this.currentTimeMs = granulePosition / result.sampleRate * 1000 - bufferSizeMs;
           this.host.requestUpdate();
@@ -162,21 +193,49 @@ export class PlaybackController implements ReactiveController {
       this.startTimeAdvanceInterval();
       this.host.requestUpdate();
     } catch (error: any) {
-      if (error.name === 'AbortError') {
-        console.log('Stream aborted');
-      } else {
-        console.error('Error fetching or processing stream:', error);
-      }
-
       // Clean up decoder
       if (this.currentDecoder) {
         this.currentDecoder.free();
         this.currentDecoder = null;
       }
 
-      this.isPlaying = false;
-      this.startTimeAdvanceInterval();
-      this.host.requestUpdate();
+      // If it's an abort error, don't retry (user stopped playback)
+      if (error.name === 'AbortError') {
+        console.log('Stream aborted by user');
+        this.isPlaying = false;
+        this.startTimeAdvanceInterval();
+        this.host.requestUpdate();
+        return;
+      }
+
+      // Network error - attempt retry
+      console.error(`Stream error (attempt ${this.retryCount + 1}/${this.MAX_RETRIES}):`, error);
+
+      if (this.retryCount < this.MAX_RETRIES) {
+        const delay = this.RETRY_DELAYS_MS[this.retryCount];
+        console.log(`Retrying in ${delay}ms...`);
+        this.retryCount++;
+
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, delay));
+
+        // Check if we were aborted during the wait
+        if (this.abortController?.signal.aborted) {
+          console.log('Retry cancelled by user');
+          this.isPlaying = false;
+          this.startTimeAdvanceInterval();
+          this.host.requestUpdate();
+          return;
+        }
+
+        // Retry the stream
+        await this.streamWithRetry();
+      } else {
+        console.error('Max retries reached, giving up');
+        this.isPlaying = false;
+        this.startTimeAdvanceInterval();
+        this.host.requestUpdate();
+      }
     }
   }
 
@@ -187,11 +246,8 @@ export class PlaybackController implements ReactiveController {
       this.abortController = null;
     }
 
-    // Close audio context
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
-    }
+    // Don't close audio context - keep it for reconnection
+    // It will be closed in cleanup() when component is removed
 
     // Free decoder
     if (this.currentDecoder) {
@@ -201,6 +257,7 @@ export class PlaybackController implements ReactiveController {
 
     this.scheduledUntil = 0;
     this.isPlaying = false;
+    this.retryCount = 0; // Reset retry count on manual stop
 
     // Start advancing time to give illusion stream is still going
     this.startTimeAdvanceInterval();
