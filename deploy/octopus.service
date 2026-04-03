@@ -1,0 +1,15 @@
+[Unit]
+Description=Octopus Radio Streaming Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=__DEPLOY_PATH__/octopus-backend
+WorkingDirectory=__DEPLOY_PATH__
+Restart=on-failure
+RestartSec=5
+Environment=HTTP_PORT=3000
+Environment=WS_PORT=3001
+
+[Install]
+WantedBy=default.target

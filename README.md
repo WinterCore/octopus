@@ -9,6 +9,7 @@
 - [X] Add file metadata reading (title, artist)
 - [ ] Add playlist image support
 - [ ] Add cli commands for playback control (next, previous, pause, resume)
+- [ ] Replace stdin with a named pipe (FIFO) for control commands, so the process can be managed as a systemd service
 
 #### Frontend:
 - [ ] Display current track title and artist
