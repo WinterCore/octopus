@@ -8,8 +8,8 @@ ExecStart=__DEPLOY_PATH__/octopus-backend
 WorkingDirectory=__DEPLOY_PATH__
 Restart=on-failure
 RestartSec=5
-Environment=HTTP_PORT=3000
-Environment=WS_PORT=3001
+Environment=HTTP_PORT=9000
+Environment=WS_PORT=9001
 
 [Install]
 WantedBy=default.target
