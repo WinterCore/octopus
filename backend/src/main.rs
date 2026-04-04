@@ -44,21 +44,42 @@ async fn main() -> io::Result<()> {
     });
 
 
+    let fifo_path = env::var("CONTROL_PIPE").unwrap_or_else(|_| "./control.fifo".to_string());
+
+    if !Path::new(&fifo_path).exists() {
+        std::process::Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create control FIFO: {}", e)))?;
+    }
+
     let cli_player = ogg_player.clone();
     let cli_metadata_tx = metadata_tx.clone();
     let cli_handle = tokio::spawn(async move {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true) // O_RDWR: prevents blocking on open and avoids EOF
+            .open(&fifo_path)
+            .await
+            .expect("Should open control FIFO");
+
+        let mut reader = BufReader::new(file);
+
         loop {
             let playern = cli_player.clone();
             let metadata_tx = cli_metadata_tx.clone();
             let mut input = String::new();
-            let mut reader = BufReader::new(io::stdin());
             match reader.read_line(&mut input).await {
-                Ok(n) => n,
+                Ok(_) => {},
                 Err(e) => {
-                    println!("Error reading stdin: {}", e);
+                    println!("Error reading control FIFO: {}", e);
                     break;
                 }
             };
+
+            if input.trim().is_empty() {
+                continue;
+            }
 
             match play_playlist(playern, metadata_tx, input.trim().to_string()).await {
                 Ok(_) => println!("Started playing playlist: {}", input.trim()),
