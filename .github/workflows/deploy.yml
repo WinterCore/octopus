@@ -25,6 +25,9 @@ jobs:
         working-directory: web
 
       - name: Build frontend
+        env:
+          VITE_API_BASE_URL: "https://stream.octopus.shungite.cc"
+          VITE_WS_URL: "wss://ws.octopus.shungite.cc"
         run: pnpm run build
         working-directory: web
 
