@@ -179,7 +179,7 @@ impl OpusPlayer {
             File::open(cloned_path.to_string()).map_err(|x| x.to_string())
         }).await.expect("Should spawn_blocking")?;
 
-        let duration_ms = Self::get_file_duration(&file).unwrap_or(0);
+        let duration_ms = Self::get_file_duration(&file).expect("Should read file duration");
         file.seek(std::io::SeekFrom::Start(0)).map_err(|x| x.to_string())?;
 
         let ogg_comments_result = get_opus_comments(&mut file);
