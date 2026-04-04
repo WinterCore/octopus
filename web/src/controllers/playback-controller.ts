@@ -4,17 +4,19 @@ import type { OggOpusDecoderWebWorker } from "ogg-opus-decoder";
 class OggOpusParser {
   parseOggPage(buffer: ArrayBuffer): number | null {
     const view = new DataView(buffer);
+    let lastGranule: number | null = null;
 
-    // Check for "OggS" magic number
-    if (view.byteLength === 0 || view.getUint32(0, false) !== 0x4f676753) return null;
+    // Scan through the buffer for "OggS" magic — chunks may not start on a page boundary
+    // and may contain multiple pages, so we take the last granule found
+    for (let i = 0; i <= view.byteLength - 14; i++) {
+      if (view.getUint32(i, false) !== 0x4f676753) continue;
 
-    // Granule position at bytes 6-13 (64-bit little-endian)
-    const granuleLow = view.getUint32(6, true);
-    const granuleHigh = view.getUint32(10, true);
+      const granuleLow = view.getUint32(i + 6, true);
+      const granuleHigh = view.getUint32(i + 10, true);
+      lastGranule = granuleLow + (granuleHigh * 0x100000000);
+    }
 
-    const granulePosition = granuleLow + (granuleHigh * 0x100000000);
-
-    return granulePosition;
+    return lastGranule;
   }
 
   isHeaderPacket(buffer: ArrayBuffer): boolean {
@@ -72,7 +74,6 @@ export class PlaybackController implements ReactiveController {
   }
 
   private cleanup() {
-    // Close audio context only on final cleanup
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
@@ -88,8 +89,11 @@ export class PlaybackController implements ReactiveController {
 
   private startTimeAdvanceInterval() {
     this.clearTimeAdvanceInterval();
+    let lastTick = performance.now();
     this.timeAdvanceInterval = setInterval(() => {
-      this.currentTimeMs += this.TIME_ADVANCE_INTERVAL_MS;
+      const now = performance.now();
+      this.currentTimeMs += now - lastTick;
+      lastTick = now;
       this.host.requestUpdate();
     }, this.TIME_ADVANCE_INTERVAL_MS) as unknown as number;
   }
@@ -107,9 +111,6 @@ export class PlaybackController implements ReactiveController {
   async start(): Promise<void> {
     // Stop any existing stream
     this.stop();
-
-    // Clear the time advance interval since we're playing live audio
-    this.clearTimeAdvanceInterval();
 
     this.isPlaying = true;
     this.host.requestUpdate();
@@ -200,11 +201,8 @@ export class PlaybackController implements ReactiveController {
       }
 
       // If it's an abort error, don't retry (user stopped playback)
+      // State is already handled synchronously by stop() before the abort resolves
       if (error.name === 'AbortError') {
-        console.log('Stream aborted by user');
-        this.isPlaying = false;
-        this.startTimeAdvanceInterval();
-        this.host.requestUpdate();
         return;
       }
 
@@ -246,8 +244,11 @@ export class PlaybackController implements ReactiveController {
       this.abortController = null;
     }
 
-    // Don't close audio context - keep it for reconnection
-    // It will be closed in cleanup() when component is removed
+    // Close audio context to immediately silence already-scheduled buffers
+    if (this.audioContext) {
+      this.audioContext.close();
+      this.audioContext = null;
+    }
 
     // Free decoder
     if (this.currentDecoder) {
