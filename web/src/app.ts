@@ -31,7 +31,7 @@ export class Octopus extends LitElement {
   private newMetadataRequested: boolean = false;
 
   @property({ type: String })
-  private imageUrl: string = "/logo.webp";
+  private imageUrl: string = "";
 
   constructor() {
     super();
@@ -57,9 +57,17 @@ export class Octopus extends LitElement {
     this.wsManager.onMessage = (data) => {
       console.log('WebSocket message received:', data);
       this.metadata = data as AudioMetadata;
-      this.playback.initialize(this.metadata.active_file_current_time_ms, this.metadata.buffer_size_ms)
+      this.playback.initialize(
+        this.metadata.active_file_current_time_ms,
+        this.metadata.buffer_size_ms,
+        this.metadata.active_file_start_time_ms + this.metadata.active_file_duration_ms,
+      )
       this.newMetadataRequested = false;
       this.lastHandledFileId = this.metadata.id;
+
+      document.title = this.metadata.author
+        ? `${this.metadata.title} — ${this.metadata.author}`
+        : this.metadata.title;
 
       // Update image URL with cache-busting query param
       if (this.metadata.image) {

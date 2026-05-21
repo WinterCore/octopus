@@ -50,6 +50,7 @@ export class PlaybackController implements ReactiveController {
   private timeAdvanceInterval: number | null = null;
   private readonly TIME_ADVANCE_INTERVAL_MS = 100; // Update time every 100ms
   private bufferSizeMs: number = 0;
+  private maxTimeMs: number = Infinity;
   private retryCount: number = 0;
   private readonly MAX_RETRIES = 5;
   private readonly RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000]; // Exponential backoff
@@ -92,14 +93,15 @@ export class PlaybackController implements ReactiveController {
     let lastTick = performance.now();
     this.timeAdvanceInterval = setInterval(() => {
       const now = performance.now();
-      this.currentTimeMs += now - lastTick;
+      this.currentTimeMs = Math.min(this.currentTimeMs + (now - lastTick), this.maxTimeMs);
       lastTick = now;
       this.host.requestUpdate();
     }, this.TIME_ADVANCE_INTERVAL_MS) as unknown as number;
   }
 
-  public initialize(currentTimeMs: number, bufferSizeMs: number): void {
-    this.currentTimeMs = currentTimeMs;
+  public initialize(currentTimeMs: number, bufferSizeMs: number, maxTimeMs: number): void {
+    this.maxTimeMs = maxTimeMs;
+    this.currentTimeMs = Math.min(currentTimeMs, maxTimeMs);
     this.bufferSizeMs = bufferSizeMs;
     this.host.requestUpdate();
 
@@ -177,7 +179,7 @@ export class PlaybackController implements ReactiveController {
         if (!parser.isHeaderPacket(value!.buffer) && granulePosition !== null && result.sampleRate) {
           const bufferSizeMs = Math.max((this.scheduledUntil - this.audioContext!.currentTime) * 1000, this.bufferSizeMs);
 
-          this.currentTimeMs = granulePosition / result.sampleRate * 1000 - bufferSizeMs;
+          this.currentTimeMs = Math.min(granulePosition / result.sampleRate * 1000 - bufferSizeMs, this.maxTimeMs);
           this.host.requestUpdate();
         }
 

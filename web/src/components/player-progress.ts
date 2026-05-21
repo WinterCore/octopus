@@ -22,7 +22,7 @@ export class PlayerProgress extends LitElement {
   progress!: ITimeProgress | null;
 
   @property({ type: String })
-  image: string = "/logo.webp";
+  image: string = "";
 
   @property({ type: Number })
   strokeWidth: number = 4;
@@ -30,12 +30,22 @@ export class PlayerProgress extends LitElement {
   @state()
   private resolvedImageUrl: string = "/logo.webp";
 
+  @state()
+  private isImageLoading: boolean = true;
+
   private async resolveImageUrl(imageUrl: string) {
-    if (!imageUrl || imageUrl === "/logo.webp") {
-      this.resolvedImageUrl = "/logo.webp";
+    if (!imageUrl) {
+      this.isImageLoading = true;
       return;
     }
 
+    if (imageUrl === "/logo.webp") {
+      this.resolvedImageUrl = "/logo.webp";
+      this.isImageLoading = false;
+      return;
+    }
+
+    this.isImageLoading = true;
     try {
       const response = await fetch(imageUrl, { method: "HEAD" });
       if (response.ok) {
@@ -46,6 +56,8 @@ export class PlayerProgress extends LitElement {
     } catch (error) {
       console.error("Failed to load playlist image:", error);
       this.resolvedImageUrl = "/logo.webp";
+    } finally {
+      this.isImageLoading = false;
     }
   }
 
@@ -131,7 +143,10 @@ export class PlayerProgress extends LitElement {
                        y=${iy}
                        width=${iw}
                        height=${ih}>
-          <img alt="poster" draggable="false" class="select-none rounded-full h-full w-full object-cover" src="${this.resolvedImageUrl}" />
+          ${this.isImageLoading
+            ? html`<div class="h-full w-full rounded-full bg-white/10 animate-pulse"></div>`
+            : html`<img alt="poster" draggable="false" class="select-none rounded-full h-full w-full object-cover" src="${this.resolvedImageUrl}" />`
+          }
         </foreignObject>
 
         ${svg`
