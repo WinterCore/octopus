@@ -1,20 +1,13 @@
-import { html, LitElement, type PropertyValues } from "lit";
-import { customElement, property } from "lit/decorators.js";
-import "./components/player-progress";
-import { WebSocketManager } from "./lib/ws-manager";
-import type {ITimeProgress} from "./components/player-progress";
-import { PlaybackController } from "./controllers/playback-controller";
+import { html, LitElement } from "lit";
+import { customElement, state } from "lit/decorators.js";
+import "./components/stream-picker";
+import "./components/stream-player";
+import "./components/admin/admin-login";
+import "./components/admin/admin-dashboard";
+import { listStreams, UnauthorizedError } from "./lib/admin-api";
+import { navigate, parseRoute, type Route } from "./lib/router";
 
-interface AudioMetadata {
-  readonly id: string;
-  readonly title: string;
-  readonly author: string;
-  readonly image: string | null;
-  readonly buffer_size_ms: number;
-  readonly active_file_duration_ms: number;
-  readonly active_file_start_time_ms: number;
-  readonly active_file_current_time_ms: number;
-}
+type AdminAuthState = "unknown" | "logged-out" | "logged-in";
 
 @customElement("octopus-app")
 export class Octopus extends LitElement {
@@ -22,133 +15,110 @@ export class Octopus extends LitElement {
     return this;
   }
 
-  private playback = new PlaybackController(this);
-  private wsManager: WebSocketManager;
+  @state()
+  private route: Route = parseRoute(window.location.pathname);
 
-  @property({ type: Object })
-  private metadata: AudioMetadata | null = null;
-  private lastHandledFileId: string | null = null;
-  private newMetadataRequested: boolean = false;
+  @state()
+  private adminAuth: AdminAuthState = "unknown";
 
-  @property({ type: String })
-  private imageUrl: string = "";
-
-  constructor() {
-    super();
-
-    // Initialize WebSocket manager
-    this.wsManager = new WebSocketManager(import.meta.env.VITE_WS_URL);
-
-    // Set up WebSocket event handlers
-    this.wsManager.onOpen = () => {
-      console.log('WebSocket connection established');
-
-      this.wsManager.send("metadata");
-    };
-
-    this.wsManager.onClose = () => {
-      console.log('WebSocket connection closed');
-    };
-
-    this.wsManager.onError = (error) => {
-      console.error('WebSocket error:', error);
-    };
-
-    this.wsManager.onMessage = (data) => {
-      console.log('WebSocket message received:', data);
-      this.metadata = data as AudioMetadata;
-      this.playback.initialize(
-        this.metadata.active_file_current_time_ms,
-        this.metadata.buffer_size_ms,
-        this.metadata.active_file_start_time_ms + this.metadata.active_file_duration_ms,
-      )
-      this.newMetadataRequested = false;
-      this.lastHandledFileId = this.metadata.id;
-
-      document.title = this.metadata.author
-        ? `${this.metadata.title} — ${this.metadata.author}`
-        : this.metadata.title;
-
-      // Update image URL with cache-busting query param
-      if (this.metadata.image) {
-        const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
-        const cacheBuster = Math.random().toString(36).substring(7);
-        this.imageUrl = `${apiBaseUrl}${this.metadata.image}?v=${cacheBuster}`;
-      } else {
-        this.imageUrl = "/logo.webp";
-      }
-
-      // Handle incoming messages here
-    };
-  }
-
-  protected updated(changedProperties: PropertyValues): void {
-    super.updated(changedProperties);
-
-    // Current track ended
-    if (this.metadata && this.playback.currentTimeMs >= this.metadata.active_file_start_time_ms + this.metadata.active_file_duration_ms && !this.newMetadataRequested && this.metadata.id === this.lastHandledFileId) {
-      // Request metadata for next track
-      this.wsManager.send("metadata");
-      this.newMetadataRequested = true;
+  private popstateListener = () => {
+    this.route = parseRoute(window.location.pathname);
+    if (this.route.kind === "admin") {
+      void this.checkAdminAuth();
     }
-  }
+  };
 
-  async firstUpdated(): Promise<void> {
-    // Connect WebSocket on mount
-    this.wsManager.connect();
+  private clickListener = (event: MouseEvent) => {
+    // Intercept clicks on internal anchor links so they use pushState instead
+    // of a full page navigation.
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+    const anchor = (event.target as HTMLElement | null)?.closest?.("a");
+    if (!anchor) return;
+    if (anchor.target && anchor.target !== "_self") return;
+    if (anchor.hasAttribute("download") || anchor.getAttribute("rel") === "external") return;
+
+    const href = anchor.getAttribute("href");
+    if (!href || href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) return;
+    if (href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) return;
+
+    event.preventDefault();
+    const url = new URL(href, window.location.origin);
+    if (url.pathname !== window.location.pathname) {
+      window.history.pushState({}, "", url.pathname + url.search);
+    }
+    this.route = parseRoute(url.pathname);
+    if (this.route.kind === "admin") {
+      void this.checkAdminAuth();
+    }
+  };
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener("popstate", this.popstateListener);
+    document.addEventListener("click", this.clickListener);
+    if (this.route.kind === "admin") {
+      void this.checkAdminAuth();
+    }
   }
 
   disconnectedCallback(): void {
-    // Clean up when component is removed
-    this.wsManager.disconnect();
+    super.disconnectedCallback();
+    window.removeEventListener("popstate", this.popstateListener);
+    document.removeEventListener("click", this.clickListener);
   }
 
-  handleTogglePlayClick = async () => {
-    this.playback.toggle();
-    console.log(this.playback.isPlaying ? 'playing' : 'paused');
-  }
-
-  get getProgress(): ITimeProgress | null {
-    if (! this.metadata) {
-      return null;
+  private async checkAdminAuth(): Promise<void> {
+    try {
+      await listStreams();
+      this.adminAuth = "logged-in";
+    } catch (e) {
+      if (e instanceof UnauthorizedError) {
+        this.adminAuth = "logged-out";
+      } else {
+        // Treat network errors as logged-out so the user sees the login form rather than a hang.
+        this.adminAuth = "logged-out";
+      }
     }
-
-    return {
-      current: Math.max(Math.ceil((this.playback.currentTimeMs - this.metadata.active_file_start_time_ms) / 1000), 0),
-      total: Math.ceil(this.metadata.active_file_duration_ms / 1000),
-    };
   }
+
+  private handleLoggedIn = () => {
+    this.adminAuth = "logged-in";
+  };
+
+  private handleLoggedOut = () => {
+    this.adminAuth = "logged-out";
+    navigate({ kind: "picker" });
+  };
+
+  private handleUnauthorized = () => {
+    this.adminAuth = "logged-out";
+  };
 
   render() {
-    return html`
-      <main class="bg-gradient-to-b p-4 from-[#51756d] to-[#253330] flex-1 flex flex-col justify-center items-center">
-        ${this.metadata
-          ? html`
-            <h1 class="text-center text-white text-3xl">
-              ${this.metadata ? this.metadata.title : 'Loading...'}
-            </h1>
-            <h2 class="text-center text-white/70 text-lg mt-1">
-              ${this.metadata ? this.metadata.author : 'Loading...'}
-            </h2>
-          `: html`
-            <div role="status" class="max-w-sm animate-pulse flex items-center flex-col gap-4">
-              <div class="h-5 bg-[#FFFFFF22] rounded-full w-48"></div>
-              <div class="h-1.5 bg-[#FFFFFF22] rounded-full w-22"></div>
-            </div>
-          `}
-        <div class="max-w-[400px] w-full p-4">
-          <player-progress .strokeWidth=${4}
-                           .progress=${this.getProgress}
-                           .image=${this.imageUrl} />
-        </div>
-        <button @click="${this.handleTogglePlayClick}" class="text-white mt-6 w-8 h-8 cursor-pointer hover:scale-110 transition-transform">
-          ${this.playback.isPlaying ? html`
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-pause"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
-          ` : html`
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-play"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-          `}
-        </button>
-      </main>
-    `;
+    switch (this.route.kind) {
+      case "picker":
+        return html`<stream-picker></stream-picker>`;
+      case "listen":
+        return html`<stream-player .streamId=${this.route.streamId}></stream-player>`;
+      case "admin":
+        if (this.adminAuth === "unknown") {
+          return html`
+            <main class="bg-gradient-to-b p-4 from-[#51756d] to-[#253330] flex-1 flex items-center justify-center">
+              <div class="w-full max-w-sm h-24 bg-white/5 rounded-xl animate-pulse"></div>
+            </main>
+          `;
+        }
+        if (this.adminAuth === "logged-out") {
+          return html`<admin-login @admin-logged-in=${this.handleLoggedIn}></admin-login>`;
+        }
+        return html`
+          <admin-dashboard
+            @admin-logged-out=${this.handleLoggedOut}
+            @admin-unauthorized=${this.handleUnauthorized}
+          ></admin-dashboard>
+        `;
+    }
   }
 }

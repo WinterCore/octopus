@@ -31,39 +31,87 @@ export class PlayerProgress extends LitElement {
   private resolvedImageUrl: string = "/logo.webp";
 
   @state()
-  private isImageLoading: boolean = true;
+  private isInitialImageLoad: boolean = true;
+
+  private currentImageHash: string | null = null;
+  private currentObjectUrl: string | null = null;
+  private pendingImageUrl: string | null = null;
+
+  private async hashBuffer(buffer: ArrayBuffer): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-1", buffer);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
 
   private async resolveImageUrl(imageUrl: string) {
-    if (!imageUrl) {
-      this.isImageLoading = true;
-      return;
-    }
-
-    if (imageUrl === "/logo.webp") {
-      this.resolvedImageUrl = "/logo.webp";
-      this.isImageLoading = false;
-      return;
-    }
-
-    this.isImageLoading = true;
-    try {
-      const response = await fetch(imageUrl, { method: "HEAD" });
-      if (response.ok) {
-        this.resolvedImageUrl = imageUrl;
-      } else {
-        this.resolvedImageUrl = "/logo.webp";
+    if (!imageUrl || imageUrl === "/logo.webp") {
+      if (this.currentObjectUrl) {
+        URL.revokeObjectURL(this.currentObjectUrl);
+        this.currentObjectUrl = null;
       }
+      this.currentImageHash = null;
+      this.resolvedImageUrl = "/logo.webp";
+      this.pendingImageUrl = imageUrl || null;
+      this.isInitialImageLoad = false;
+      return;
+    }
+
+    this.pendingImageUrl = imageUrl;
+
+    try {
+      const response = await fetch(imageUrl);
+      if (!response.ok) {
+        throw new Error(`Image fetch failed with status ${response.status}`);
+      }
+
+      // A newer resolve has started; abandon this one before mutating state.
+      if (this.pendingImageUrl !== imageUrl) return;
+
+      const buffer = await response.arrayBuffer();
+      if (this.pendingImageUrl !== imageUrl) return;
+
+      const hash = await this.hashBuffer(buffer);
+      if (this.pendingImageUrl !== imageUrl) return;
+
+      if (hash === this.currentImageHash) {
+        // Same bytes as what's already displayed — keep current image.
+        return;
+      }
+
+      const newObjectUrl = URL.createObjectURL(new Blob([buffer]));
+      if (this.currentObjectUrl) URL.revokeObjectURL(this.currentObjectUrl);
+      this.currentObjectUrl = newObjectUrl;
+      this.currentImageHash = hash;
+      this.resolvedImageUrl = newObjectUrl;
     } catch (error) {
       console.error("Failed to load playlist image:", error);
-      this.resolvedImageUrl = "/logo.webp";
+      // Only fall back to the logo if we have nothing displayed yet;
+      // otherwise keep the currently visible image to avoid flicker.
+      if (this.currentImageHash === null) {
+        this.resolvedImageUrl = "/logo.webp";
+      }
     } finally {
-      this.isImageLoading = false;
+      // Clear the initial-load placeholder once the first attempt finishes,
+      // regardless of outcome. Subsequent fetches always happen in the
+      // background without showing a placeholder.
+      if (this.pendingImageUrl === imageUrl) {
+        this.isInitialImageLoad = false;
+      }
     }
   }
 
   updated(changedProperties: Map<string, any>) {
     if (changedProperties.has("image")) {
       this.resolveImageUrl(this.image);
+    }
+  }
+
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    if (this.currentObjectUrl) {
+      URL.revokeObjectURL(this.currentObjectUrl);
+      this.currentObjectUrl = null;
     }
   }
 
@@ -143,7 +191,7 @@ export class PlayerProgress extends LitElement {
                        y=${iy}
                        width=${iw}
                        height=${ih}>
-          ${this.isImageLoading
+          ${this.isInitialImageLoad
             ? html`<div class="h-full w-full rounded-full bg-white/10 animate-pulse"></div>`
             : html`<img alt="poster" draggable="false" class="select-none rounded-full h-full w-full object-cover" src="${this.resolvedImageUrl}" />`
           }

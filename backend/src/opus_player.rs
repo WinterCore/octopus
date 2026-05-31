@@ -96,6 +96,8 @@ pub struct OpusPlayer {
     granule_position: u64,
     active_file: Option<ActiveFileMetadata>,
     current_playlist_path: Option<String>,
+    paused: bool,
+    pause_started_at: Option<Instant>,
 }
 
 impl OpusPlayer {
@@ -108,15 +110,43 @@ impl OpusPlayer {
             granule_position: 0,
             active_file: None,
             current_playlist_path: None,
+            paused: false,
+            pause_started_at: None,
         }
     }
-    
+
     pub async fn get_metadata(&self) -> Option<ActiveFileMetadata> {
         return self.active_file.clone();
     }
 
     pub async fn get_playlist_path(&self) -> Option<String> {
         return self.current_playlist_path.clone();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    pub fn pause(&mut self) {
+        if self.paused {
+            return;
+        }
+        self.paused = true;
+        self.pause_started_at = Some(Instant::now());
+    }
+
+    pub fn resume(&mut self) {
+        if !self.paused {
+            return;
+        }
+        if let (Some(start), Some(pause_started)) = (self.start_instant, self.pause_started_at) {
+            // Shift the playback origin forward by the paused duration so the
+            // real-time throttle in process_next_packet doesn't try to "catch up".
+            let paused_for = pause_started.elapsed();
+            self.start_instant = Some(start + paused_for);
+        }
+        self.paused = false;
+        self.pause_started_at = None;
     }
 
     pub async fn get_stream_time_data(&self) -> TimeData {
@@ -242,6 +272,13 @@ impl OpusPlayer {
         &mut self,
         state: &mut PlaybackState,
     ) -> Result<bool, String> {
+        // While paused, idle without producing packets or advancing time.
+        // Listeners stay connected; new ones get the headstart buffer.
+        if self.paused {
+            sleep(Duration::from_millis(100)).await;
+            return Ok(true);
+        }
+
         let active_file = match &self.active_file {
             Some(file) => file,
             None => return Err("No active file for playback".to_string()),
@@ -394,17 +431,32 @@ impl OpusPlayer {
 }
 
 enum OpusPlayerCommand {
-    PlayFile(oneshot::Sender<PlaybackResult>, String),
+    PlayFile {
+        path: String,
+        started: oneshot::Sender<()>,
+        result: oneshot::Sender<PlaybackResult>,
+    },
     GetMetadata(oneshot::Sender<Option<ActiveFileMetadata>>),
     GetHeadstartData(oneshot::Sender<Vec<OpusPlayerEvent>>),
     GetTimeData(oneshot::Sender<TimeData>),
     RegisterListener(mpsc::Sender<OpusPlayerEvent>),
     GetPlaylistPath(oneshot::Sender<Option<String>>),
+    Skip,
+    Pause,
+    Resume,
+    GetPaused(oneshot::Sender<bool>),
 }
 
+pub struct PlayFileHandles {
+    pub started: oneshot::Receiver<()>,
+    pub result: oneshot::Receiver<PlaybackResult>,
+}
+
+#[derive(Debug)]
 pub enum PlaybackResult {
     Finished,
     Interrupted,
+    Skipped,
     Error(String),
 }
 
@@ -429,7 +481,7 @@ impl OpusPlayerActor {
                 // Process incoming commands
                 Some(command) = self.receiver.recv() => {
                     match command {
-                        OpusPlayerCommand::PlayFile(sender, path) => {
+                        OpusPlayerCommand::PlayFile { path, started, result } => {
                             // If already playing, notify the old sender that playback was interrupted
                             if let Some((_, old_sender)) = playback_state.take() {
                                 let _ = old_sender.send(PlaybackResult::Interrupted);
@@ -438,11 +490,16 @@ impl OpusPlayerActor {
                             // Start new playback
                             match self.player.start_playback(&path).await {
                                 Ok(state) => {
-                                    playback_state = Some((state, sender));
+                                    // Signal that active_file now reflects the new track.
+                                    let _ = started.send(());
+                                    playback_state = Some((state, result));
                                 },
                                 Err(e) => {
                                     println!("Error starting playback: {}", e);
-                                    let _ = sender.send(PlaybackResult::Error(e));
+                                    // Drop `started` (closed) so the caller knows start failed
+                                    // without needing a separate signal.
+                                    drop(started);
+                                    let _ = result.send(PlaybackResult::Error(e));
                                 }
                             }
                         },
@@ -476,6 +533,21 @@ impl OpusPlayerActor {
                             if let Err(e) = sender.send(playlist_path) {
                                 println!("Error sending playlist path: {:?}", e);
                             }
+                        },
+                        OpusPlayerCommand::Skip => {
+                            // Abort the current file; the playlist loop will advance.
+                            if let Some((_, sender)) = playback_state.take() {
+                                let _ = sender.send(PlaybackResult::Skipped);
+                            }
+                        },
+                        OpusPlayerCommand::Pause => {
+                            self.player.pause();
+                        },
+                        OpusPlayerCommand::Resume => {
+                            self.player.resume();
+                        },
+                        OpusPlayerCommand::GetPaused(sender) => {
+                            let _ = sender.send(self.player.is_paused());
                         },
                     }
                 }
@@ -533,16 +605,22 @@ impl OpusPlayerHandle {
         Self { sender }
     }
 
-    pub async fn play_file(&self, path: String) -> Result<PlaybackResult, String> {
-        let (sender, receiver) = oneshot::channel();
+    pub async fn play_file(&self, path: String) -> Result<PlayFileHandles, String> {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (result_tx, result_rx) = oneshot::channel();
 
-        let command = OpusPlayerCommand::PlayFile(sender, path);
+        let command = OpusPlayerCommand::PlayFile {
+            path,
+            started: started_tx,
+            result: result_tx,
+        };
 
         self.sender.send(command).await.map_err(|x| x.to_string())?;
 
-        let result = receiver.await.map_err(|x| x.to_string())?;
-
-        Ok(result)
+        Ok(PlayFileHandles {
+            started: started_rx,
+            result: result_rx,
+        })
     }
 
     pub async fn get_metadata(&self) -> Result<Option<ActiveFileMetadata>, String> {
@@ -599,6 +677,24 @@ impl OpusPlayerHandle {
         let playlist_path = receiver.await.map_err(|x| x.to_string())?;
 
         Ok(playlist_path)
+    }
+
+    pub async fn skip(&self) -> Result<(), String> {
+        self.sender.send(OpusPlayerCommand::Skip).await.map_err(|x| x.to_string())
+    }
+
+    pub async fn pause(&self) -> Result<(), String> {
+        self.sender.send(OpusPlayerCommand::Pause).await.map_err(|x| x.to_string())
+    }
+
+    pub async fn resume(&self) -> Result<(), String> {
+        self.sender.send(OpusPlayerCommand::Resume).await.map_err(|x| x.to_string())
+    }
+
+    pub async fn is_paused(&self) -> Result<bool, String> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender.send(OpusPlayerCommand::GetPaused(sender)).await.map_err(|x| x.to_string())?;
+        receiver.await.map_err(|x| x.to_string())
     }
 }
 

@@ -1,5 +1,6 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { OggOpusDecoderWebWorker } from "ogg-opus-decoder";
+import { audioUrl } from "../lib/env";
 
 class OggOpusParser {
   parseOggPage(buffer: ArrayBuffer): number | null {
@@ -57,6 +58,8 @@ export class PlaybackController implements ReactiveController {
 
   public isPlaying: boolean = false;
   public currentTimeMs: number = 0;
+  private currentStreamId: string | null = null;
+  private paused: boolean = false;
 
   constructor(host: ReactiveControllerHost) {
     this.host = host;
@@ -90,6 +93,10 @@ export class PlaybackController implements ReactiveController {
 
   private startTimeAdvanceInterval() {
     this.clearTimeAdvanceInterval();
+    if (this.paused) {
+      // Stream is paused upstream — don't advance the displayed clock.
+      return;
+    }
     let lastTick = performance.now();
     this.timeAdvanceInterval = setInterval(() => {
       const now = performance.now();
@@ -105,14 +112,40 @@ export class PlaybackController implements ReactiveController {
     this.bufferSizeMs = bufferSizeMs;
     this.host.requestUpdate();
 
-    if (!this.isPlaying) {
+    if (!this.isPlaying && !this.paused) {
       this.startTimeAdvanceInterval();
     }
   }
 
-  async start(): Promise<void> {
+  public setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
+    this.paused = paused;
+
+    if (paused) {
+      // Stream is paused upstream — freeze the displayed progress instead of
+      // letting the wall-clock interval keep ticking it forward.
+      this.clearTimeAdvanceInterval();
+    } else if (!this.isPlaying) {
+      // Resume the illusion-of-progress ticker only if we aren't actively
+      // streaming audio (in which case packets drive currentTimeMs directly).
+      this.startTimeAdvanceInterval();
+    }
+
+    this.host.requestUpdate();
+  }
+
+  async start(streamId?: string): Promise<void> {
     // Stop any existing stream
     this.stop();
+
+    if (streamId) {
+      this.currentStreamId = streamId;
+    }
+
+    if (!this.currentStreamId) {
+      console.warn("PlaybackController.start called without a streamId");
+      return;
+    }
 
     this.isPlaying = true;
     this.host.requestUpdate();
@@ -150,7 +183,7 @@ export class PlaybackController implements ReactiveController {
       console.log('Decoder ready, starting stream...');
 
       // Fetch and decode stream
-      const response = await fetch(import.meta.env.VITE_API_BASE_URL, {
+      const response = await fetch(audioUrl(this.currentStreamId!), {
         signal: this.abortController.signal
       });
       const reader = response.body!.getReader();
@@ -274,6 +307,10 @@ export class PlaybackController implements ReactiveController {
     } else {
       this.start();
     }
+  }
+
+  public get streamId(): string | null {
+    return this.currentStreamId;
   }
 
   private playAudioData(channelData: Float32Array[], sampleRate: number): void {

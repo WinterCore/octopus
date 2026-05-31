@@ -1,0 +1,11 @@
+default_stream = "main"
+
+[[stream]]
+id = "main"
+name = "Main Station"
+playlist = "/path/to/main/playlist"
+
+[[stream]]
+id = "chill"
+name = "Chill Vibes"
+playlist = "/path/to/chill/playlist"

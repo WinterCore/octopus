@@ -18,6 +18,14 @@ export class WebSocketManager {
     this.url = url;
   }
 
+  public setUrl(url: string): void {
+    if (this.url === url) return;
+    this.url = url;
+    this.disconnect();
+    this.intentionallyClosed = false;
+    this.connect();
+  }
+
   public connect(): void {
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
       console.log('WebSocket already connected or connecting');
