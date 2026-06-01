@@ -41,6 +41,11 @@ export class StreamPlayer extends LitElement {
   @state()
   private imageUrl: string = "";
 
+  @state()
+  private volumeOverlayVisible: boolean = false;
+
+  private volumeHideTimer: number | null = null;
+
   connectedCallback(): void {
     super.connectedCallback();
     this.classList.add("flex", "flex-col", "flex-1");
@@ -119,7 +124,23 @@ export class StreamPlayer extends LitElement {
     super.disconnectedCallback();
     this.wsManager?.disconnect();
     this.wsManager = null;
+    if (this.volumeHideTimer !== null) {
+      window.clearTimeout(this.volumeHideTimer);
+      this.volumeHideTimer = null;
+    }
   }
+
+  private handleVolumeChange = (e: CustomEvent<{ volume: number }>) => {
+    this.playback.setVolume(e.detail.volume);
+    this.volumeOverlayVisible = true;
+    if (this.volumeHideTimer !== null) {
+      window.clearTimeout(this.volumeHideTimer);
+    }
+    this.volumeHideTimer = window.setTimeout(() => {
+      this.volumeOverlayVisible = false;
+      this.volumeHideTimer = null;
+    }, 2000);
+  };
 
   private handleTogglePlayClick = async () => {
     if (this.playback.isPlaying) {
@@ -169,12 +190,23 @@ export class StreamPlayer extends LitElement {
             .strokeWidth=${4}
             .progress=${this.getProgress}
             .image=${this.imageUrl}
+            .volume=${this.playback.volume}
+            @volume-change=${this.handleVolumeChange}
           ></player-progress>
           ${paused
             ? html`<div class="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <span class="px-3 py-1 rounded-full bg-amber-500/30 text-amber-100 text-xs tracking-wider backdrop-blur-sm">PAUSED</span>
               </div>`
             : ""}
+          <div
+            class=${`absolute inset-x-0 bottom-[20%] flex justify-center pointer-events-none transition-opacity duration-200 ${
+              this.volumeOverlayVisible ? "opacity-100" : "opacity-0"
+            }`}
+          >
+            <span class="px-3 py-1 rounded-full bg-black/40 text-white text-xs tracking-wider backdrop-blur-sm">
+              VOL ${Math.round(this.playback.volume * 100)}%
+            </span>
+          </div>
         </div>
 
         <button

@@ -11,7 +11,8 @@ pub struct StreamConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamsConfig {
-    pub default_stream: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_stream: Option<String>,
     #[serde(rename = "stream")]
     pub streams: Vec<StreamConfig>,
 }
@@ -34,11 +35,13 @@ impl StreamsConfig {
                 return Err(format!("duplicate stream id: {}", s.id));
             }
         }
-        if !self.streams.iter().any(|s| s.id == self.default_stream) {
-            return Err(format!(
-                "default_stream '{}' does not match any defined stream",
-                self.default_stream
-            ));
+        if let Some(default) = &self.default_stream {
+            if !self.streams.iter().any(|s| &s.id == default) {
+                return Err(format!(
+                    "default_stream '{}' does not match any defined stream",
+                    default
+                ));
+            }
         }
         Ok(())
     }

@@ -27,7 +27,7 @@ pub type StreamRegistry = Arc<RwLock<HashMap<String, Arc<RwLock<StreamEntry>>>>>
 
 pub struct AppState {
     pub registry: StreamRegistry,
-    pub default_stream: String,
+    pub default_stream: Option<String>,
     pub config_path: PathBuf,
     pub auth: Arc<AuthState>,
 }
@@ -151,10 +151,17 @@ async fn main() -> io::Result<()> {
             }
 
             // CONTROL_PIPE writes always target the default stream.
-            let entry = match cli_state.registry.read().await.get(&cli_state.default_stream).cloned() {
+            let default_stream_id = match &cli_state.default_stream {
+                Some(id) => id.clone(),
+                None => {
+                    println!("Control FIFO write ignored: no default_stream configured");
+                    continue;
+                }
+            };
+            let entry = match cli_state.registry.read().await.get(&default_stream_id).cloned() {
                 Some(e) => e,
                 None => {
-                    println!("Default stream '{}' not found in registry", cli_state.default_stream);
+                    println!("Default stream '{}' not found in registry", default_stream_id);
                     continue;
                 }
             };
@@ -167,7 +174,7 @@ async fn main() -> io::Result<()> {
                 player,
                 metadata_tx,
                 line.to_string(),
-                cli_state.default_stream.clone(),
+                default_stream_id.clone(),
                 stream_name,
                 cli_state.registry.clone(),
             ).await {

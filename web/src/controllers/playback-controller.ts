@@ -42,9 +42,24 @@ class OggOpusParser {
   }
 }
 
+const VOLUME_STORAGE_KEY = "octopus:volume";
+
+function loadPersistedVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_STORAGE_KEY);
+    if (raw === null) return 1;
+    const parsed = parseFloat(raw);
+    if (!Number.isFinite(parsed)) return 1;
+    return Math.min(1, Math.max(0, parsed));
+  } catch {
+    return 1;
+  }
+}
+
 export class PlaybackController implements ReactiveController {
   private host: ReactiveControllerHost;
   private audioContext: AudioContext | null = null;
+  private gainNode: GainNode | null = null;
   private scheduledUntil: number = 0;
   private abortController: AbortController | null = null;
   private currentDecoder: OggOpusDecoderWebWorker | null = null;
@@ -60,6 +75,25 @@ export class PlaybackController implements ReactiveController {
   public currentTimeMs: number = 0;
   private currentStreamId: string | null = null;
   private paused: boolean = false;
+  private _volume: number = loadPersistedVolume();
+
+  public get volume(): number {
+    return this._volume;
+  }
+
+  public setVolume(volume: number): void {
+    const clamped = Math.min(1, Math.max(0, volume));
+    this._volume = clamped;
+    if (this.gainNode) {
+      this.gainNode.gain.value = clamped;
+    }
+    try {
+      localStorage.setItem(VOLUME_STORAGE_KEY, String(clamped));
+    } catch {
+      // localStorage unavailable (private mode, quota); fine to ignore.
+    }
+    this.host.requestUpdate();
+  }
 
   constructor(host: ReactiveControllerHost) {
     this.host = host;
@@ -81,6 +115,7 @@ export class PlaybackController implements ReactiveController {
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
+      this.gainNode = null;
     }
   }
 
@@ -153,6 +188,9 @@ export class PlaybackController implements ReactiveController {
     // Create audio context only if it doesn't exist (reuse for reconnections)
     if (!this.audioContext) {
       this.audioContext = new AudioContext();
+      this.gainNode = this.audioContext.createGain();
+      this.gainNode.gain.value = this._volume;
+      this.gainNode.connect(this.audioContext.destination);
     }
 
     // Resume the audio context if it's suspended
@@ -283,6 +321,7 @@ export class PlaybackController implements ReactiveController {
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
+      this.gainNode = null;
     }
 
     // Free decoder
@@ -327,10 +366,10 @@ export class PlaybackController implements ReactiveController {
       audioBuffer.copyToChannel(channelData[i], i);
     }
 
-    // Create source and schedule playback
+    // Create source and schedule playback through the master gain node.
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
-    source.connect(this.audioContext.destination);
+    source.connect(this.gainNode ?? this.audioContext.destination);
 
     // Schedule playback with buffer lookahead to prevent underruns
     const now = this.audioContext.currentTime;

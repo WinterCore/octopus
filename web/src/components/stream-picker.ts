@@ -46,6 +46,7 @@ export class StreamPicker extends LitElement {
     return html`
       <main class="bg-gradient-to-b p-4 from-[#51756d] to-[#253330] flex-1 flex flex-col items-center justify-center">
         <div class="w-full max-w-md">
+          <img src="/logo.webp" alt="Octopus" class="mx-auto h-24 w-24 mb-4 select-none" draggable="false" />
           <h1 class="text-center text-white text-3xl mb-1">Octopus Radio</h1>
           <p class="text-center text-white/70 text-sm mb-6">Pick a stream to listen to</p>
 

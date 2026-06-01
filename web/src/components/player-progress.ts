@@ -27,6 +27,11 @@ export class PlayerProgress extends LitElement {
   @property({ type: Number })
   strokeWidth: number = 4;
 
+  @property({ type: Number })
+  volume: number = 1;
+
+  private volumeDragSvg: SVGSVGElement | null = null;
+
   @state()
   private resolvedImageUrl: string = "/logo.webp";
 
@@ -113,6 +118,58 @@ export class PlayerProgress extends LitElement {
       URL.revokeObjectURL(this.currentObjectUrl);
       this.currentObjectUrl = null;
     }
+    this.endVolumeDrag();
+  }
+
+  private handleVolumePointerDown = (e: PointerEvent) => {
+    e.preventDefault();
+    const svgEl = (e.currentTarget as Element).closest("svg") as SVGSVGElement | null;
+    if (!svgEl) return;
+    this.volumeDragSvg = svgEl;
+    this.applyVolumeFromPointer(e);
+    document.addEventListener("pointermove", this.handleVolumePointerMove);
+    document.addEventListener("pointerup", this.endVolumeDrag);
+    document.addEventListener("pointercancel", this.endVolumeDrag);
+  };
+
+  private handleVolumePointerMove = (e: PointerEvent) => {
+    if (!this.volumeDragSvg) return;
+    this.applyVolumeFromPointer(e);
+  };
+
+  private endVolumeDrag = () => {
+    this.volumeDragSvg = null;
+    document.removeEventListener("pointermove", this.handleVolumePointerMove);
+    document.removeEventListener("pointerup", this.endVolumeDrag);
+    document.removeEventListener("pointercancel", this.endVolumeDrag);
+  };
+
+  private applyVolumeFromPointer(e: PointerEvent) {
+    const svgEl = this.volumeDragSvg;
+    if (!svgEl) return;
+    const pt = svgEl.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const ctm = svgEl.getScreenCTM();
+    if (!ctm) return;
+    const local = pt.matrixTransform(ctm.inverse());
+    // Geometry constants below must mirror the render() values.
+    const cx = 150;
+    const cy = 160;
+    const dx = local.x - cx;
+    const dy = local.y - cy;
+    const atan = Math.atan2(dy, dx);
+    // Bottom half-arc: 3 o'clock (atan ≈ 0) → 0; 9 o'clock (atan ≈ π) → 1.
+    let t: number;
+    if (atan >= 0) {
+      t = atan / Math.PI;
+    } else if (atan > -Math.PI / 2) {
+      t = 0;
+    } else {
+      t = 1;
+    }
+    const next = clamp(0, 1, t);
+    this.dispatchEvent(new CustomEvent("volume-change", { detail: { volume: next }, bubbles: true, composed: true }));
   }
 
   render() {
@@ -131,7 +188,7 @@ export class PlayerProgress extends LitElement {
     const radius = 150 - pr;
     const r = radius - halfStroke;
 
-    const imagePadding = 20;
+    const imagePadding = 28;
 
     const ix = imagePadding + pr;
     const iy = imagePadding + offsetY + pr;
@@ -158,6 +215,21 @@ export class PlayerProgress extends LitElement {
     }
     
     const progressParams = getProgressParams(this.progress);
+
+    // Volume half-arc from 3 o'clock to 9 o'clock through the bottom, sitting
+    // between the artwork and the progress ring (closer to the artwork).
+    const artworkR = radius - imagePadding;
+    const volRingR = artworkR + (r - artworkR) * 0.2;
+    const volStrokeWidth = 3;
+    const volFullSweep = Math.PI - 0.0001;
+    const volFillSweep = volFullSweep * clamp(0, 1, this.volume);
+    const volPathFull = getArc([cx, cy], [volRingR, volRingR], 0, volFullSweep, 0);
+    const volPathFilled = volFillSweep > 0.001
+      ? getArc([cx, cy], [volRingR, volRingR], 0, volFillSweep, 0)
+      : "";
+    const volKnobAngle = volFillSweep;
+    const volKx = Math.cos(volKnobAngle) * volRingR + cx;
+    const volKy = Math.sin(volKnobAngle) * volRingR + cy;
 
     return html`
       <svg xmlns="http://www.w3.org/2000/svg"
@@ -219,6 +291,29 @@ export class PlayerProgress extends LitElement {
             `
             : ''
           }
+        `}
+
+        ${svg`
+          <path d=${volPathFull}
+                fill="none"
+                stroke="#00000033"
+                stroke-width=${volStrokeWidth}
+                stroke-linecap="round" />
+          ${volPathFilled
+            ? svg`<path d=${volPathFilled}
+                        fill="none"
+                        stroke="#FFFFFFEE"
+                        stroke-width=${volStrokeWidth}
+                        stroke-linecap="round" />`
+            : ''
+          }
+          <circle cx=${volKx} cy=${volKy} fill="#FFFFFF" r="5" />
+          <path d=${volPathFull}
+                fill="none"
+                stroke-width="22"
+                stroke="transparent"
+                style="pointer-events: stroke; cursor: pointer; touch-action: none;"
+                @pointerdown=${this.handleVolumePointerDown} />
         `}
       </svg>
     `;
