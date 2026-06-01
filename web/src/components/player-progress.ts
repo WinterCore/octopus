@@ -188,7 +188,7 @@ export class PlayerProgress extends LitElement {
     const radius = 150 - pr;
     const r = radius - halfStroke;
 
-    const imagePadding = 28;
+    const imagePadding = 42;
 
     const ix = imagePadding + pr;
     const iy = imagePadding + offsetY + pr;
@@ -219,7 +219,7 @@ export class PlayerProgress extends LitElement {
     // Volume half-arc from 3 o'clock to 9 o'clock through the bottom, sitting
     // between the artwork and the progress ring (closer to the artwork).
     const artworkR = radius - imagePadding;
-    const volRingR = artworkR + (r - artworkR) * 0.2;
+    const volRingR = artworkR + (r - artworkR) * 0.5;
     const volStrokeWidth = 3;
     const volFullSweep = Math.PI - 0.0001;
     const volFillSweep = volFullSweep * clamp(0, 1, this.volume);

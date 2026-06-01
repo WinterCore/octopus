@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/public/logo.webp" alt="Octopus" width="160" />
+</p>
+
 # Octopus
 
 A live radio streaming server that broadcasts **multiple concurrent streams** from a single process. Each stream continuously plays `.opus` files from its own playlist directory and streams them in real time over HTTP. Any number of clients can connect to any stream and hear it live. A WebSocket connection per stream provides track metadata and pushes updates when tracks change. An admin web UI (password-gated) lets you skip tracks, pause/resume, and rename streams.
