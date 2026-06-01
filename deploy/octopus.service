@@ -4,12 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=__DEPLOY_PATH__/octopus-backend
+ExecStart=__DEPLOY_PATH__/octopus-backend --config __DEPLOY_PATH__/streams.toml
 WorkingDirectory=__DEPLOY_PATH__
 Restart=on-failure
 RestartSec=5
-Environment=HTTP_PORT=9000
-Environment=WS_PORT=9001
+EnvironmentFile=__DEPLOY_PATH__/octopus.env
 
 [Install]
 WantedBy=default.target
