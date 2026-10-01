@@ -1,0 +1,16 @@
+{
+  "steps": {
+    "build": {
+      "commands": [
+        "npm install",
+        "npm run build"
+      ]
+    }
+  },
+  "runtime": {
+    "server": {
+      "static": "./dist"
+    }
+  }
+}
+
